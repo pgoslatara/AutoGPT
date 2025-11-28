@@ -1,7 +1,7 @@
-import { AdminUserGrantHistory } from "@/components/admin/spending/admin-grant-history-data-table";
 import type { CreditTransactionType } from "@/lib/autogpt-server-api";
 import { withRoleAccess } from "@/lib/withRoleAccess";
 import { Suspense } from "react";
+import { AdminUserGrantHistory } from "./components/AdminUserGrantHistory";
 
 type SpendingDashboardPageSearchParams = {
   page?: string;
@@ -29,6 +29,7 @@ function SpendingDashboard({
         </div>
 
         <Suspense
+          key={`${page}-${status}-${search}`}
           fallback={
             <div className="py-10 text-center">Loading submissions...</div>
           }

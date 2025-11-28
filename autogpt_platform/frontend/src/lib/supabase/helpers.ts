@@ -1,7 +1,7 @@
+import { environment } from "@/services/environment";
+import { Key, storage } from "@/services/storage/local-storage";
 import { type CookieOptions } from "@supabase/ssr";
-
-// Detect if we're in a Playwright test environment
-const isTest = process.env.NEXT_PUBLIC_PW_TEST === "true";
+import { SupabaseClient } from "@supabase/supabase-js";
 
 export const PROTECTED_PAGES = [
   "/monitor",
@@ -14,17 +14,7 @@ export const PROTECTED_PAGES = [
 
 export const ADMIN_PAGES = ["/admin"] as const;
 
-export const STORAGE_KEYS = {
-  LOGOUT: "supabase-logout",
-} as const;
-
 export function getCookieSettings(): Partial<CookieOptions> {
-  if (isTest)
-    return {
-      secure: false,
-      sameSite: "lax",
-    };
-
   return {
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
@@ -47,13 +37,24 @@ export function shouldRedirectOnLogout(pathname: string): boolean {
 
 // Cross-tab logout utilities
 export function broadcastLogout(): void {
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(STORAGE_KEYS.LOGOUT, Date.now().toString());
-  }
+  storage.set(Key.LOGOUT, Date.now().toString());
 }
 
 export function isLogoutEvent(event: StorageEvent): boolean {
-  return event.key === STORAGE_KEYS.LOGOUT;
+  return event.key === Key.LOGOUT;
+}
+
+// WebSocket disconnect intent utilities
+export function setWebSocketDisconnectIntent(): void {
+  storage.set(Key.WEBSOCKET_DISCONNECT_INTENT, "true");
+}
+
+export function clearWebSocketDisconnectIntent(): void {
+  storage.clean(Key.WEBSOCKET_DISCONNECT_INTENT);
+}
+
+export function hasWebSocketDisconnectIntent(): boolean {
+  return storage.get(Key.WEBSOCKET_DISCONNECT_INTENT) === "true";
 }
 
 // Redirect utilities
@@ -82,7 +83,7 @@ export function setupSessionEventListeners(
   onFocus: () => void,
   onStorageChange: (e: StorageEvent) => void,
 ): EventListeners {
-  if (typeof window === "undefined" || typeof document === "undefined") {
+  if (environment.isServerSide()) {
     return { cleanup: () => {} };
   }
 
@@ -97,4 +98,39 @@ export function setupSessionEventListeners(
       window.removeEventListener("storage", onStorageChange);
     },
   };
+}
+
+export interface CodeExchangeResult {
+  success: boolean;
+  error?: string;
+}
+
+export async function exchangePasswordResetCode(
+  supabase: SupabaseClient<any, "public", any>,
+  code: string,
+): Promise<CodeExchangeResult> {
+  try {
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+
+    if (error) {
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+
+    if (!data.session) {
+      return {
+        success: false,
+        error: "Failed to create session",
+      };
+    }
+
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
 }

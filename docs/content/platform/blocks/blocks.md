@@ -2,6 +2,12 @@
 
 AutoGPT uses a modular approach with various "blocks" to handle different tasks. These blocks are the building blocks of AutoGPT workflows, allowing users to create complex automations by combining simple, specialized components.
 
+!!! info "Creating Your Own Blocks"
+    Want to create your own custom blocks? Check out our guides:
+    
+    - [Build your own Blocks](../new_blocks.md) - Step-by-step tutorial with examples
+    - [Block SDK Guide](../block-sdk-guide.md) - Advanced SDK patterns with OAuth, webhooks, and provider configuration
+
 Below is a comprehensive list of all available blocks, categorized by their primary function. Click on any block name to view its detailed documentation.
 
 ## Basic Operations
@@ -102,6 +108,8 @@ Below is a comprehensive list of all available blocks, categorized by their prim
 | Block Name | Description |
 |------------|-------------|
 | [Gmail Read](google/gmail.md#gmail-read) | Retrieves and reads emails from a Gmail account |
+| [Gmail Get Thread](google/gmail.md#gmail-get-thread) | Returns every message in a Gmail thread |
+| [Gmail Reply](google/gmail.md#gmail-reply) | Sends a reply that stays in the same thread |
 | [Gmail Send](google/gmail.md#gmail-send) | Sends emails using a Gmail account |
 | [Gmail List Labels](google/gmail.md#gmail-list-labels) | Retrieves all labels from a Gmail account |
 | [Gmail Add Label](google/gmail.md#gmail-add-label) | Adds a label to a specific email in a Gmail account |

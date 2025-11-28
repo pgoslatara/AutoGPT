@@ -1,38 +1,35 @@
 import logging
-from typing import Any, Optional
+from typing import Optional
 
 import autogpt_libs.auth as autogpt_auth_lib
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Body, HTTPException, Query, Security, status
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
 
 import backend.server.v2.library.db as library_db
 import backend.server.v2.library.model as library_model
 import backend.server.v2.store.exceptions as store_exceptions
-from backend.data.graph import get_graph
-from backend.data.model import CredentialsMetaInput
-from backend.executor.utils import make_node_credentials_input_map
-from backend.integrations.webhooks.utils import setup_webhook_for_block
-from backend.util.exceptions import NotFoundError
+from backend.util.exceptions import DatabaseError, NotFoundError
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/agents",
     tags=["library", "private"],
-    dependencies=[Depends(autogpt_auth_lib.auth_middleware)],
+    dependencies=[Security(autogpt_auth_lib.requires_user)],
 )
 
 
 @router.get(
     "",
     summary="List Library Agents",
+    response_model=library_model.LibraryAgentResponse,
     responses={
+        200: {"description": "List of library agents"},
         500: {"description": "Server error", "content": {"application/json": {}}},
     },
 )
 async def list_library_agents(
-    user_id: str = Depends(autogpt_auth_lib.depends.get_user_id),
+    user_id: str = Security(autogpt_auth_lib.get_user_id),
     search_term: Optional[str] = Query(
         None, description="Search term to filter agents"
     ),
@@ -84,24 +81,93 @@ async def list_library_agents(
         ) from e
 
 
+@router.get(
+    "/favorites",
+    summary="List Favorite Library Agents",
+    responses={
+        500: {"description": "Server error", "content": {"application/json": {}}},
+    },
+)
+async def list_favorite_library_agents(
+    user_id: str = Security(autogpt_auth_lib.get_user_id),
+    page: int = Query(
+        1,
+        ge=1,
+        description="Page number to retrieve (must be >= 1)",
+    ),
+    page_size: int = Query(
+        15,
+        ge=1,
+        description="Number of agents per page (must be >= 1)",
+    ),
+) -> library_model.LibraryAgentResponse:
+    """
+    Get all favorite agents in the user's library.
+
+    Args:
+        user_id: ID of the authenticated user.
+        page: Page number to retrieve.
+        page_size: Number of agents per page.
+
+    Returns:
+        A LibraryAgentResponse containing favorite agents and pagination metadata.
+
+    Raises:
+        HTTPException: If a server/database error occurs.
+    """
+    try:
+        return await library_db.list_favorite_library_agents(
+            user_id=user_id,
+            page=page,
+            page_size=page_size,
+        )
+    except Exception as e:
+        logger.error(f"Could not list favorite library agents for user #{user_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        ) from e
+
+
 @router.get("/{library_agent_id}", summary="Get Library Agent")
 async def get_library_agent(
     library_agent_id: str,
-    user_id: str = Depends(autogpt_auth_lib.depends.get_user_id),
+    user_id: str = Security(autogpt_auth_lib.get_user_id),
 ) -> library_model.LibraryAgent:
     return await library_db.get_library_agent(id=library_agent_id, user_id=user_id)
+
+
+@router.get("/by-graph/{graph_id}")
+async def get_library_agent_by_graph_id(
+    graph_id: str,
+    version: Optional[int] = Query(default=None),
+    user_id: str = Security(autogpt_auth_lib.get_user_id),
+) -> library_model.LibraryAgent:
+    library_agent = await library_db.get_library_agent_by_graph_id(
+        user_id, graph_id, version
+    )
+    if not library_agent:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Library agent for graph #{graph_id} and user #{user_id} not found",
+        )
+    return library_agent
 
 
 @router.get(
     "/marketplace/{store_listing_version_id}",
     summary="Get Agent By Store ID",
-    tags=["store, library"],
+    tags=["store", "library"],
     response_model=library_model.LibraryAgent | None,
+    responses={
+        200: {"description": "Library agent found"},
+        404: {"description": "Agent not found"},
+    },
 )
 async def get_library_agent_by_store_listing_version_id(
     store_listing_version_id: str,
-    user_id: str = Depends(autogpt_auth_lib.depends.get_user_id),
-):
+    user_id: str = Security(autogpt_auth_lib.get_user_id),
+) -> library_model.LibraryAgent | None:
     """
     Get Library Agent from Store Listing Version ID.
     """
@@ -134,7 +200,7 @@ async def get_library_agent_by_store_listing_version_id(
 )
 async def add_marketplace_agent_to_library(
     store_listing_version_id: str = Body(embed=True),
-    user_id: str = Depends(autogpt_auth_lib.depends.get_user_id),
+    user_id: str = Security(autogpt_auth_lib.get_user_id),
 ) -> library_model.LibraryAgent:
     """
     Add an agent from the marketplace to the user's library.
@@ -162,7 +228,7 @@ async def add_marketplace_agent_to_library(
             "to add to library"
         )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
-    except store_exceptions.DatabaseError as e:
+    except DatabaseError as e:
         logger.error(f"Database error while adding agent to library: {e}", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -190,7 +256,7 @@ async def add_marketplace_agent_to_library(
 async def update_library_agent(
     library_agent_id: str,
     payload: library_model.LibraryAgentUpdateRequest,
-    user_id: str = Depends(autogpt_auth_lib.depends.get_user_id),
+    user_id: str = Security(autogpt_auth_lib.get_user_id),
 ) -> library_model.LibraryAgent:
     """
     Update the library agent with the given fields.
@@ -216,7 +282,7 @@ async def update_library_agent(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
         ) from e
-    except store_exceptions.DatabaseError as e:
+    except DatabaseError as e:
         logger.error(f"Database error while updating library agent: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -241,7 +307,7 @@ async def update_library_agent(
 )
 async def delete_library_agent(
     library_agent_id: str,
-    user_id: str = Depends(autogpt_auth_lib.depends.get_user_id),
+    user_id: str = Security(autogpt_auth_lib.get_user_id),
 ) -> Response:
     """
     Soft-delete the specified library agent.
@@ -272,87 +338,9 @@ async def delete_library_agent(
 @router.post("/{library_agent_id}/fork", summary="Fork Library Agent")
 async def fork_library_agent(
     library_agent_id: str,
-    user_id: str = Depends(autogpt_auth_lib.depends.get_user_id),
+    user_id: str = Security(autogpt_auth_lib.get_user_id),
 ) -> library_model.LibraryAgent:
     return await library_db.fork_library_agent(
         library_agent_id=library_agent_id,
         user_id=user_id,
     )
-
-
-class TriggeredPresetSetupParams(BaseModel):
-    name: str
-    description: str = ""
-
-    trigger_config: dict[str, Any]
-    agent_credentials: dict[str, CredentialsMetaInput] = Field(default_factory=dict)
-
-
-@router.post("/{library_agent_id}/setup-trigger")
-async def setup_trigger(
-    library_agent_id: str = Path(..., description="ID of the library agent"),
-    params: TriggeredPresetSetupParams = Body(),
-    user_id: str = Depends(autogpt_auth_lib.depends.get_user_id),
-) -> library_model.LibraryAgentPreset:
-    """
-    Sets up a webhook-triggered `LibraryAgentPreset` for a `LibraryAgent`.
-    Returns the correspondingly created `LibraryAgentPreset` with `webhook_id` set.
-    """
-    library_agent = await library_db.get_library_agent(
-        id=library_agent_id, user_id=user_id
-    )
-    if not library_agent:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Library agent #{library_agent_id} not found",
-        )
-
-    graph = await get_graph(
-        library_agent.graph_id, version=library_agent.graph_version, user_id=user_id
-    )
-    if not graph:
-        raise HTTPException(
-            status.HTTP_410_GONE,
-            f"Graph #{library_agent.graph_id} not accessible (anymore)",
-        )
-    if not (trigger_node := graph.webhook_input_node):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Graph #{library_agent.graph_id} does not have a webhook node",
-        )
-
-    trigger_config_with_credentials = {
-        **params.trigger_config,
-        **(
-            make_node_credentials_input_map(graph, params.agent_credentials).get(
-                trigger_node.id
-            )
-            or {}
-        ),
-    }
-
-    new_webhook, feedback = await setup_webhook_for_block(
-        user_id=user_id,
-        trigger_block=trigger_node.block,
-        trigger_config=trigger_config_with_credentials,
-    )
-    if not new_webhook:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not set up webhook: {feedback}",
-        )
-
-    new_preset = await library_db.create_preset(
-        user_id=user_id,
-        preset=library_model.LibraryAgentPresetCreatable(
-            graph_id=library_agent.graph_id,
-            graph_version=library_agent.graph_version,
-            name=params.name,
-            description=params.description,
-            inputs=trigger_config_with_credentials,
-            credentials=params.agent_credentials,
-            webhook_id=new_webhook.id,
-            is_active=True,
-        ),
-    )
-    return new_preset

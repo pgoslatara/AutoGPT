@@ -4,32 +4,37 @@ import logging
 from typing import Annotated
 
 import fastapi
+import pydantic
+from autogpt_libs.auth import get_user_id
 
 import backend.data.analytics
-from backend.server.utils import get_user_id
 
 router = fastapi.APIRouter()
 logger = logging.getLogger(__name__)
 
 
+class LogRawMetricRequest(pydantic.BaseModel):
+    metric_name: str = pydantic.Field(..., min_length=1)
+    metric_value: float = pydantic.Field(..., allow_inf_nan=False)
+    data_string: str = pydantic.Field(..., min_length=1)
+
+
 @router.post(path="/log_raw_metric")
 async def log_raw_metric(
-    user_id: Annotated[str, fastapi.Depends(get_user_id)],
-    metric_name: Annotated[str, fastapi.Body(..., embed=True)],
-    metric_value: Annotated[float, fastapi.Body(..., embed=True)],
-    data_string: Annotated[str, fastapi.Body(..., embed=True)],
+    user_id: Annotated[str, fastapi.Security(get_user_id)],
+    request: LogRawMetricRequest,
 ):
     try:
         result = await backend.data.analytics.log_raw_metric(
             user_id=user_id,
-            metric_name=metric_name,
-            metric_value=metric_value,
-            data_string=data_string,
+            metric_name=request.metric_name,
+            metric_value=request.metric_value,
+            data_string=request.data_string,
         )
         return result.id
     except Exception as e:
         logger.exception(
-            "Failed to log metric %s for user %s: %s", metric_name, user_id, e
+            "Failed to log metric %s for user %s: %s", request.metric_name, user_id, e
         )
         raise fastapi.HTTPException(
             status_code=500,
@@ -42,7 +47,7 @@ async def log_raw_metric(
 
 @router.post("/log_raw_analytics")
 async def log_raw_analytics(
-    user_id: Annotated[str, fastapi.Depends(get_user_id)],
+    user_id: Annotated[str, fastapi.Security(get_user_id)],
     type: Annotated[str, fastapi.Body(..., embed=True)],
     data: Annotated[
         dict,

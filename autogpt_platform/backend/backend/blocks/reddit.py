@@ -4,7 +4,13 @@ from typing import Iterator, Literal
 import praw
 from pydantic import BaseModel, SecretStr
 
-from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema
+from backend.data.block import (
+    Block,
+    BlockCategory,
+    BlockOutput,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+)
 from backend.data.model import (
     CredentialsField,
     CredentialsMetaInput,
@@ -76,7 +82,7 @@ def get_praw(creds: RedditCredentials) -> praw.Reddit:
 
 
 class GetRedditPostsBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         subreddit: str = SchemaField(
             description="Subreddit name, excluding the /r/ prefix",
             default="writingprompts",
@@ -94,8 +100,9 @@ class GetRedditPostsBlock(Block):
             description="Number of posts to fetch", default=10
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         post: RedditPost = SchemaField(description="Reddit post")
+        posts: list[RedditPost] = SchemaField(description="List of all Reddit posts")
 
     def __init__(self):
         super().__init__(
@@ -128,6 +135,23 @@ class GetRedditPostsBlock(Block):
                         id="id2", subreddit="subreddit", title="title2", body="body2"
                     ),
                 ),
+                (
+                    "posts",
+                    [
+                        RedditPost(
+                            id="id1",
+                            subreddit="subreddit",
+                            title="title1",
+                            body="body1",
+                        ),
+                        RedditPost(
+                            id="id2",
+                            subreddit="subreddit",
+                            title="title2",
+                            body="body2",
+                        ),
+                    ],
+                ),
             ],
             test_mock={
                 "get_posts": lambda input_data, credentials: [
@@ -150,6 +174,7 @@ class GetRedditPostsBlock(Block):
         self, input_data: Input, *, credentials: RedditCredentials, **kwargs
     ) -> BlockOutput:
         current_time = datetime.now(tz=timezone.utc)
+        all_posts = []
         for post in self.get_posts(input_data=input_data, credentials=credentials):
             if input_data.last_minutes:
                 post_datetime = datetime.fromtimestamp(
@@ -162,20 +187,24 @@ class GetRedditPostsBlock(Block):
             if input_data.last_post and post.id == input_data.last_post:
                 break
 
-            yield "post", RedditPost(
+            reddit_post = RedditPost(
                 id=post.id,
                 subreddit=input_data.subreddit,
                 title=post.title,
                 body=post.selftext,
             )
+            all_posts.append(reddit_post)
+            yield "post", reddit_post
+
+        yield "posts", all_posts
 
 
 class PostRedditCommentBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: RedditCredentialsInput = RedditCredentialsField()
         data: RedditComment = SchemaField(description="Reddit comment")
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         comment_id: str = SchemaField(description="Posted comment ID")
 
     def __init__(self):

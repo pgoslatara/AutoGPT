@@ -6,14 +6,20 @@ from moviepy.audio.io.AudioFileClip import AudioFileClip
 from moviepy.video.fx.Loop import Loop
 from moviepy.video.io.VideoFileClip import VideoFileClip
 
-from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema
+from backend.data.block import (
+    Block,
+    BlockCategory,
+    BlockOutput,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+)
 from backend.data.model import SchemaField
 from backend.util.file import MediaFileType, get_exec_file_path, store_media_file
 
 
 class MediaDurationBlock(Block):
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         media_in: MediaFileType = SchemaField(
             description="Media input (URL, data URI, or local path)."
         )
@@ -22,12 +28,9 @@ class MediaDurationBlock(Block):
             default=True,
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         duration: float = SchemaField(
             description="Duration of the media file (in seconds)."
-        )
-        error: str = SchemaField(
-            description="Error message if something fails.", default=""
         )
 
     def __init__(self):
@@ -44,12 +47,14 @@ class MediaDurationBlock(Block):
         input_data: Input,
         *,
         graph_exec_id: str,
+        user_id: str,
         **kwargs,
     ) -> BlockOutput:
         # 1) Store the input media locally
         local_media_path = await store_media_file(
             graph_exec_id=graph_exec_id,
             file=input_data.media_in,
+            user_id=user_id,
             return_content=False,
         )
         media_abspath = get_exec_file_path(graph_exec_id, local_media_path)
@@ -68,7 +73,7 @@ class LoopVideoBlock(Block):
     Block for looping (repeating) a video clip until a given duration or number of loops.
     """
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         video_in: MediaFileType = SchemaField(
             description="The input video (can be a URL, data URI, or local path)."
         )
@@ -88,12 +93,9 @@ class LoopVideoBlock(Block):
             default="file_path",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         video_out: str = SchemaField(
             description="Looped video returned either as a relative path or a data URI."
-        )
-        error: str = SchemaField(
-            description="Error message if something fails.", default=""
         )
 
     def __init__(self):
@@ -111,12 +113,14 @@ class LoopVideoBlock(Block):
         *,
         node_exec_id: str,
         graph_exec_id: str,
+        user_id: str,
         **kwargs,
     ) -> BlockOutput:
         # 1) Store the input video locally
         local_video_path = await store_media_file(
             graph_exec_id=graph_exec_id,
             file=input_data.video_in,
+            user_id=user_id,
             return_content=False,
         )
         input_abspath = get_exec_file_path(graph_exec_id, local_video_path)
@@ -149,6 +153,7 @@ class LoopVideoBlock(Block):
         video_out = await store_media_file(
             graph_exec_id=graph_exec_id,
             file=output_filename,
+            user_id=user_id,
             return_content=input_data.output_return_type == "data_uri",
         )
 
@@ -161,7 +166,7 @@ class AddAudioToVideoBlock(Block):
     Optionally scale the volume of the new track.
     """
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         video_in: MediaFileType = SchemaField(
             description="Video input (URL, data URI, or local path)."
         )
@@ -177,12 +182,9 @@ class AddAudioToVideoBlock(Block):
             default="file_path",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         video_out: MediaFileType = SchemaField(
             description="Final video (with attached audio), as a path or data URI."
-        )
-        error: str = SchemaField(
-            description="Error message if something fails.", default=""
         )
 
     def __init__(self):
@@ -200,17 +202,20 @@ class AddAudioToVideoBlock(Block):
         *,
         node_exec_id: str,
         graph_exec_id: str,
+        user_id: str,
         **kwargs,
     ) -> BlockOutput:
         # 1) Store the inputs locally
         local_video_path = await store_media_file(
             graph_exec_id=graph_exec_id,
             file=input_data.video_in,
+            user_id=user_id,
             return_content=False,
         )
         local_audio_path = await store_media_file(
             graph_exec_id=graph_exec_id,
             file=input_data.audio_in,
+            user_id=user_id,
             return_content=False,
         )
 
@@ -239,6 +244,7 @@ class AddAudioToVideoBlock(Block):
         video_out = await store_media_file(
             graph_exec_id=graph_exec_id,
             file=output_filename,
+            user_id=user_id,
             return_content=input_data.output_return_type == "data_uri",
         )
 

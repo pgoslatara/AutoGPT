@@ -1,4 +1,4 @@
-from logging import Logger
+import logging
 
 from backend.util.settings import AppEnvironment, BehaveAs, Settings
 
@@ -6,14 +6,9 @@ settings = Settings()
 
 
 def configure_logging():
-    import logging
-
     import autogpt_libs.logging.config
 
-    if (
-        settings.config.behave_as == BehaveAs.LOCAL
-        or settings.config.app_env == AppEnvironment.LOCAL
-    ):
+    if not is_structured_logging_enabled():
         autogpt_libs.logging.config.configure_logging(force_cloud_logging=False)
     else:
         autogpt_libs.logging.config.configure_logging(force_cloud_logging=True)
@@ -22,10 +17,18 @@ def configure_logging():
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+def is_structured_logging_enabled() -> bool:
+    """Check if structured logging (cloud logging) is enabled."""
+    return not (
+        settings.config.behave_as == BehaveAs.LOCAL
+        or settings.config.app_env == AppEnvironment.LOCAL
+    )
+
+
 class TruncatedLogger:
     def __init__(
         self,
-        logger: Logger,
+        logger: logging.Logger,
         prefix: str = "",
         metadata: dict | None = None,
         max_length: int = 1000,
@@ -63,5 +66,16 @@ class TruncatedLogger:
         extra_msg = str(extra or "")
         text = f"{self.prefix} {msg} {extra_msg}"
         if len(text) > self.max_length:
-            text = text[: self.max_length] + "..."
+            half = (self.max_length - 3) // 2
+            text = text[:half] + "..." + text[-half:]
         return text
+
+
+class PrefixFilter(logging.Filter):
+    def __init__(self, prefix: str):
+        super().__init__()
+        self.prefix = prefix
+
+    def filter(self, record):
+        record.msg = f"{self.prefix} {record.msg}"
+        return True

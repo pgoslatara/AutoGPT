@@ -1,7 +1,7 @@
 import logging
 import os
-import zlib
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from uuid import uuid4
 
@@ -50,6 +50,10 @@ prisma = Prisma(
 logger = logging.getLogger(__name__)
 
 
+def is_connected():
+    return prisma.is_connected()
+
+
 @conn_retry("Prisma", "Acquiring connection")
 async def connect():
     if prisma.is_connected():
@@ -79,18 +83,44 @@ async def disconnect():
         raise ConnectionError("Failed to disconnect from Prisma.")
 
 
-@asynccontextmanager
-async def transaction():
-    async with prisma.tx() as tx:
-        yield tx
+# Transaction timeout constant:
+# increased from 15s to prevent timeout errors during graph creation under load.
+TRANSACTION_TIMEOUT = timedelta(seconds=30)
 
 
 @asynccontextmanager
-async def locked_transaction(key: str):
-    lock_key = zlib.crc32(key.encode("utf-8"))
-    async with transaction() as tx:
-        await tx.execute_raw("SELECT pg_advisory_xact_lock($1)", lock_key)
+async def transaction(timeout: timedelta = TRANSACTION_TIMEOUT):
+    """
+    Create a database transaction with optional timeout.
+
+    Args:
+        timeout: Transaction timeout as a timedelta.
+            Defaults to `TRANSACTION_TIMEOUT` (30s).
+    """
+    async with prisma.tx(timeout=timeout) as tx:
         yield tx
+
+
+def get_database_schema() -> str:
+    """Extract database schema from DATABASE_URL."""
+    parsed_url = urlparse(DATABASE_URL)
+    query_params = dict(parse_qsl(parsed_url.query))
+    return query_params.get("schema", "public")
+
+
+async def query_raw_with_schema(query_template: str, *args) -> list[dict]:
+    """Execute raw SQL query with proper schema handling."""
+    schema = get_database_schema()
+    schema_prefix = f"{schema}." if schema != "public" else ""
+    formatted_query = query_template.format(schema_prefix=schema_prefix)
+
+    import prisma as prisma_module
+
+    result = await prisma_module.get_client().query_raw(
+        formatted_query, *args  # type: ignore
+    )
+
+    return result
 
 
 class BaseDbModel(BaseModel):

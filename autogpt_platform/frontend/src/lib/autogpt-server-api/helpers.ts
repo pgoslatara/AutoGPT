@@ -1,4 +1,39 @@
+import { IMPERSONATION_HEADER_NAME } from "@/lib/constants";
 import { getServerSupabase } from "@/lib/supabase/server/getServerSupabase";
+import { environment } from "@/services/environment";
+import { Key, storage } from "@/services/storage/local-storage";
+
+import { GraphValidationErrorResponse } from "./types";
+
+export class ApiError<R = any> extends Error {
+  public status: number;
+  public response: R;
+
+  constructor(message: string, status: number, response: R) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.response = response;
+  }
+
+  /**
+   * Type guard to check if this error is a structured graph validation error
+   */
+  isGraphValidationError(): this is ApiError<GraphValidationErrorResponse> {
+    return (
+      this.response !== undefined &&
+      typeof this.response === "object" &&
+      this.response !== null &&
+      "detail" in this.response &&
+      typeof this.response.detail === "object" &&
+      this.response.detail !== null &&
+      "type" in this.response.detail &&
+      this.response.detail.type === "validation_error" &&
+      "node_errors" in this.response.detail &&
+      typeof this.response.detail.node_errors === "object"
+    );
+  }
+}
 
 export function buildRequestUrl(
   baseUrl: string,
@@ -6,15 +41,69 @@ export function buildRequestUrl(
   method: string,
   payload?: Record<string, any>,
 ): string {
-  let url = baseUrl + path;
+  const url = baseUrl + path;
   const payloadAsQuery = ["GET", "DELETE"].includes(method);
 
   if (payloadAsQuery && payload) {
-    const queryParams = new URLSearchParams(payload);
-    url += `?${queryParams.toString()}`;
+    return buildUrlWithQuery(url, payload);
   }
 
   return url;
+}
+
+export function buildClientUrl(path: string): string {
+  return `/api/proxy/api${path}`;
+}
+
+export function buildServerUrl(path: string): string {
+  return `${environment.getAGPTServerApiUrl()}${path}`;
+}
+
+export function buildUrlWithQuery(
+  url: string,
+  query?: Record<string, any>,
+): string {
+  if (!query) return url;
+
+  // Filter out undefined values to prevent them from being included as "undefined" strings
+  const filteredQuery = Object.entries(query).reduce(
+    (acc, [key, value]) => {
+      if (value !== undefined) {
+        acc[key] = value;
+      }
+      return acc;
+    },
+    {} as Record<string, any>,
+  );
+
+  const queryParams = new URLSearchParams(filteredQuery);
+  return queryParams.size > 0 ? `${url}?${queryParams.toString()}` : url;
+}
+
+export async function handleFetchError(response: Response): Promise<ApiError> {
+  const errorMessage = await parseApiError(response);
+
+  // Safely parse response body - it might not be JSON (e.g., HTML error pages)
+  let responseData: any = null;
+  try {
+    const contentType = response.headers.get("content-type");
+    if (contentType && contentType.includes("application/json")) {
+      responseData = await response.json();
+    } else {
+      // For non-JSON responses, get the text content
+      responseData = await response.text();
+    }
+  } catch (e) {
+    // If parsing fails, use null as response data
+    console.warn("Failed to parse error response body:", e);
+    responseData = null;
+  }
+
+  return new ApiError(
+    errorMessage || "Request failed",
+    response.status,
+    responseData,
+  );
 }
 
 export async function getServerAuthToken(): Promise<string> {
@@ -30,7 +119,7 @@ export async function getServerAuthToken(): Promise<string> {
       error,
     } = await supabase.auth.getSession();
 
-    if (error || !session?.access_token) {
+    if (error || !session || !session.access_token) {
       return "no-token-found";
     }
 
@@ -45,6 +134,7 @@ export function createRequestHeaders(
   token: string,
   hasRequestBody: boolean,
   contentType: string = "application/json",
+  originalRequest?: Request,
 ): Record<string, string> {
   const headers: Record<string, string> = {};
 
@@ -54,6 +144,16 @@ export function createRequestHeaders(
 
   if (token && token !== "no-token-found") {
     headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  // Forward admin impersonation header if present
+  if (originalRequest) {
+    const impersonationHeader = originalRequest.headers.get(
+      IMPERSONATION_HEADER_NAME,
+    );
+    if (impersonationHeader) {
+      headers[IMPERSONATION_HEADER_NAME] = impersonationHeader;
+    }
   }
 
   return headers;
@@ -76,7 +176,7 @@ export function serializeRequestBody(
 
 export async function parseApiError(response: Response): Promise<string> {
   try {
-    const errorData = await response.json();
+    const errorData = await response.clone().json();
 
     if (
       Array.isArray(errorData.detail) &&
@@ -91,7 +191,12 @@ export async function parseApiError(response: Response): Promise<string> {
       return errors.join("\n");
     }
 
-    return errorData.detail || response.statusText;
+    if (typeof errorData.detail === "object" && errorData.detail !== null) {
+      if (errorData.detail.message) return errorData.detail.message;
+      return response.statusText; // Fallback to status text if no message
+    }
+
+    return errorData.detail || errorData.error || response.statusText;
   } catch {
     return response.statusText;
   }
@@ -116,7 +221,7 @@ export async function parseApiResponse(response: Response): Promise<any> {
   }
 }
 
-function isAuthenticationError(
+export function isAuthenticationError(
   response: Response,
   errorDetail: string,
 ): boolean {
@@ -129,12 +234,12 @@ function isAuthenticationError(
   );
 }
 
-function isLogoutInProgress(): boolean {
-  if (typeof window === "undefined") return false;
+export function isLogoutInProgress(): boolean {
+  if (environment.isServerSide()) return false;
 
   try {
     // Check if logout was recently triggered
-    const logoutTimestamp = window.localStorage.getItem("supabase-logout");
+    const logoutTimestamp = storage.get(Key.LOGOUT);
     if (logoutTimestamp) {
       const timeDiff = Date.now() - parseInt(logoutTimestamp);
       // Consider logout in progress for 5 seconds after trigger
@@ -156,14 +261,26 @@ export async function makeAuthenticatedRequest(
   url: string,
   payload?: Record<string, any>,
   contentType: string = "application/json",
+  originalRequest?: Request,
 ): Promise<any> {
   const token = await getServerAuthToken();
   const payloadAsQuery = ["GET", "DELETE"].includes(method);
   const hasRequestBody = !payloadAsQuery && payload !== undefined;
 
-  const response = await fetch(url, {
+  // Add query parameters for GET/DELETE requests
+  let requestUrl = url;
+  if (payloadAsQuery && payload) {
+    requestUrl = buildUrlWithQuery(url, payload);
+  }
+
+  const response = await fetch(requestUrl, {
     method,
-    headers: createRequestHeaders(token, hasRequestBody, contentType),
+    headers: createRequestHeaders(
+      token,
+      hasRequestBody,
+      contentType,
+      originalRequest,
+    ),
     body: hasRequestBody
       ? serializeRequestBody(payload, contentType)
       : undefined,
@@ -171,6 +288,14 @@ export async function makeAuthenticatedRequest(
 
   if (!response.ok) {
     const errorDetail = await parseApiError(response);
+
+    // Try to parse the full response body for better error context
+    let responseData = null;
+    try {
+      responseData = await response.clone().json();
+    } catch {
+      // Ignore parsing errors
+    }
 
     // Handle authentication errors gracefully during logout
     if (isAuthenticationError(response, errorDetail)) {
@@ -180,17 +305,11 @@ export async function makeAuthenticatedRequest(
           "Authentication request failed during logout, ignoring:",
           errorDetail,
         );
-        return null;
       }
-
-      // For authentication errors outside logout, log but don't throw
-      // This prevents crashes when session expires naturally
-      console.warn("Authentication failed:", errorDetail);
-      return null;
     }
 
-    // For other errors, throw as normal
-    throw new Error(errorDetail);
+    // For other errors, throw ApiError with proper status code
+    throw new ApiError(errorDetail, response.status, responseData);
   }
 
   return parseApiResponse(response);
@@ -199,13 +318,17 @@ export async function makeAuthenticatedRequest(
 export async function makeAuthenticatedFileUpload(
   url: string,
   formData: FormData,
+  originalRequest?: Request,
 ): Promise<string> {
   const token = await getServerAuthToken();
 
-  const headers: Record<string, string> = {};
-  if (token && token !== "no-token-found") {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
+  // Reuse existing header creation logic but exclude Content-Type for FormData
+  const headers = createRequestHeaders(
+    token,
+    false,
+    "application/json",
+    originalRequest,
+  );
 
   // Don't set Content-Type for FormData - let the browser set it with boundary
   const response = await fetch(url, {
@@ -218,6 +341,17 @@ export async function makeAuthenticatedFileUpload(
     // Handle authentication errors gracefully for file uploads too
     const errorMessage = `Error uploading file: ${response.statusText}`;
 
+    // Try to parse error response
+    let responseData = null;
+    try {
+      const responseText = await response.clone().text();
+      if (responseText) {
+        responseData = JSON.parse(responseText);
+      }
+    } catch {
+      // Ignore parsing errors
+    }
+
     if (response.status === 401 || response.status === 403) {
       if (isLogoutInProgress()) {
         console.debug(
@@ -229,8 +363,8 @@ export async function makeAuthenticatedFileUpload(
       return "";
     }
 
-    throw new Error(errorMessage);
+    throw new ApiError(errorMessage, response.status, responseData);
   }
 
-  return await response.text();
+  return await response.json();
 }

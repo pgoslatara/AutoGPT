@@ -1,34 +1,30 @@
-import { useTurnstile } from "@/hooks/useTurnstile";
+import { useToast } from "@/components/molecules/Toast/use-toast";
 import { useSupabase } from "@/lib/supabase/hooks/useSupabase";
-import { signupFormSchema, LoginProvider } from "@/types/auth";
+import { environment } from "@/services/environment";
+import { LoginProvider, signupFormSchema } from "@/types/auth";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
-import { signup } from "./actions";
-import { providerLogin } from "../login/actions";
 import z from "zod";
-import { BehaveAs, getBehaveAs } from "@/lib/utils";
+import { signup as signupAction } from "./actions";
 
 export function useSignupPage() {
-  const { supabase, user, isUserLoading } = useSupabase();
+  const { supabase, user, isUserLoading, isLoggedIn } = useSupabase();
   const [feedback, setFeedback] = useState<string | null>(null);
-  const [captchaKey, setCaptchaKey] = useState(0);
+  const { toast } = useToast();
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
+  const [isSigningUp, setIsSigningUp] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
-  const isCloudEnv = getBehaveAs() === BehaveAs.CLOUD;
+  const [showNotAllowedModal, setShowNotAllowedModal] = useState(false);
+  const isCloudEnv = environment.isCloud();
 
-  const turnstile = useTurnstile({
-    action: "signup",
-    autoVerify: false,
-    resetOnError: true,
-  });
-
-  const resetCaptcha = useCallback(() => {
-    setCaptchaKey((k) => k + 1);
-    turnstile.reset();
-  }, [turnstile]);
+  useEffect(() => {
+    if (isLoggedIn && !isSigningUp) {
+      router.push("/marketplace");
+    }
+  }, [isLoggedIn, isSigningUp]);
 
   const form = useForm<z.infer<typeof signupFormSchema>>({
     resolver: zodResolver(signupFormSchema),
@@ -40,71 +36,115 @@ export function useSignupPage() {
     },
   });
 
-  useEffect(() => {
-    if (user) router.push("/");
-  }, [user]);
-
   async function handleProviderSignup(provider: LoginProvider) {
     setIsGoogleLoading(true);
-    const error = await providerLogin(provider);
-    setIsGoogleLoading(false);
-    if (error) {
-      resetCaptcha();
-      setFeedback(error);
-      return;
+    setIsSigningUp(true);
+
+    try {
+      const response = await fetch("/api/auth/provider", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider }),
+      });
+
+      if (!response.ok) {
+        const { error } = await response.json();
+
+        if (error === "not_allowed") {
+          setShowNotAllowedModal(true);
+          setIsSigningUp(false);
+          return;
+        }
+
+        throw new Error(error || "Failed to start OAuth flow");
+      }
+
+      const { url } = await response.json();
+      if (url) window.location.href = url as string;
+    } catch (error) {
+      setIsGoogleLoading(false);
+      setIsSigningUp(false);
+      toast({
+        title:
+          error instanceof Error ? error.message : "Failed to start OAuth flow",
+        variant: "destructive",
+      });
     }
-    setFeedback(null);
   }
 
   async function handleSignup(data: z.infer<typeof signupFormSchema>) {
     setIsLoading(true);
 
-    if (!turnstile.verified) {
-      setFeedback("Please complete the CAPTCHA challenge.");
+    if (data.email.includes("@agpt.co")) {
+      toast({
+        title:
+          "Please use Google SSO to create an account using an AutoGPT email.",
+        variant: "default",
+      });
+
       setIsLoading(false);
-      resetCaptcha();
       return;
     }
 
-    if (data.email.includes("@agpt.co")) {
-      setFeedback(
-        "Please use Google SSO to create an account using an AutoGPT email.",
+    setIsSigningUp(true);
+
+    try {
+      const result = await signupAction(
+        data.email,
+        data.password,
+        data.confirmPassword,
+        data.agreeToTerms,
       );
 
       setIsLoading(false);
-      resetCaptcha();
-      return;
-    }
 
-    const error = await signup(data, turnstile.token as string);
-    setIsLoading(false);
-    if (error) {
-      if (error === "user_already_exists") {
-        setFeedback("User with this email already exists");
-        turnstile.reset();
+      if (!result.success) {
+        if (result.error === "user_already_exists") {
+          setFeedback("User with this email already exists");
+          setIsSigningUp(false);
+          return;
+        }
+        if (result.error === "not_allowed") {
+          setShowNotAllowedModal(true);
+          setIsSigningUp(false);
+          return;
+        }
+
+        toast({
+          title: result.error || "Signup failed",
+          variant: "destructive",
+        });
+        setIsSigningUp(false);
         return;
-      } else {
-        setFeedback(error);
-        resetCaptcha();
-        turnstile.reset();
       }
-      return;
+
+      const next = result.next || "/";
+      if (next) router.replace(next);
+    } catch (error) {
+      setIsLoading(false);
+      setIsSigningUp(false);
+      toast({
+        title:
+          error instanceof Error
+            ? error.message
+            : "Unexpected error during signup",
+        variant: "destructive",
+      });
     }
-    setFeedback(null);
   }
 
   return {
     form,
     feedback,
-    turnstile,
-    captchaKey,
     isLoggedIn: !!user,
     isLoading,
+    isGoogleLoading,
     isCloudEnv,
     isUserLoading,
-    isGoogleLoading,
+    showNotAllowedModal,
     isSupabaseAvailable: !!supabase,
     handleSubmit: form.handleSubmit(handleSignup),
+    handleCloseNotAllowedModal: () => setShowNotAllowedModal(false),
     handleProviderSignup,
   };
 }

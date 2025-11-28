@@ -23,7 +23,7 @@ To setup the server, you need to have the following installed:
 
 We use Node.js to run our frontend application.
 
-If you need assistance installing Node.js:
+If you need assistance installing Node.js:  
 https://nodejs.org/en/download/
 
 NPM is included with Node.js, but if you need assistance installing NPM:
@@ -79,7 +79,23 @@ Once you have Docker and Docker Compose installed, you can proceed to the next s
     See <a href="https://github.com/supabase/supabase/issues/33816">supabase/supabase #33816</a> for additional context.
 </details>
 
-## Setup
+## Quick Setup with Auto Setup Script (Recommended)
+If you're self-hosting AutoGPT locally, we recommend using our official setup script to simplify the process. This will install dependencies (like Docker), pull the latest code, and launch the app with minimal effort.
+
+For macOS/Linux:
+```
+curl -fsSL https://setup.agpt.co/install.sh -o install.sh && bash install.sh
+```
+
+For Windows (PowerShell):
+```
+powershell -c "iwr https://setup.agpt.co/install.bat -o install.bat; ./install.bat"
+```
+
+This method is ideal if you're setting up for development or testing and want to skip manual configuration.
+
+
+## Manual Setup
 
 ### Cloning the Repository
 The first step is cloning the AutoGPT repository to your computer.
@@ -91,53 +107,63 @@ If you get stuck, follow [this guide](https://docs.github.com/en/repositories/cr
 
 Once that's complete you can continue the setup process.
 
-### Running the backend services
+### Running the AutoGPT Platform
 
-To run the backend services, follow these steps:
+To run the platform, follow these steps:
 
 * Navigate to the `autogpt_platform` directory inside the AutoGPT folder:
   ```bash
    cd AutoGPT/autogpt_platform
   ```
 
-* Copy the `.env.example` file to `.env` in `autogpt_platform`:
-  ```
-   cp .env.example .env
-  ```
-  This command will copy the `.env.example` file to `.env` in the `supabase` directory. You can modify the `.env` file to add your own environment variables.
+- Copy the `.env.default` file to `.env` in `autogpt_platform`:
 
-* Run the backend services:
+  ```
+   cp .env.default .env
+  ```
+
+  This command will copy the `.env.default` file to `.env` in the `autogpt_platform` directory. You can modify the `.env` file to add your own environment variables.
+
+- Run the platform services:
   ```
    docker compose up -d --build
   ```
-  This command will start all the necessary backend services defined in the `docker-compose.combined.yml` file in detached mode.
+  This command will start all the necessary backend services defined in the `docker-compose.yml` file in detached mode.
 
+---
 
-### Running the frontend application
+### 🛠️ Using the Makefile for Common Tasks
 
-To run the frontend application open a new terminal and follow these steps:
+The repository includes a `Makefile` with helpful commands to streamline setup and development. You may use `make` commands as an alternative to calling Docker or scripts directly.
 
-- Navigate to `frontend` folder within the `autogpt_platform` directory:
+#### Most-used Makefile commands
 
-  ```
-   cd frontend
-  ```
+Inside the `autogpt_platform` directory, you can use:
 
-- Copy the `.env.example` file available in the `frontend` directory to `.env` in the same directory:
+| Command                | What it Does                                                                 |
+|------------------------|-------------------------------------------------------------------------------|
+| `make start-core`      | Start just the core services (Supabase, Redis, RabbitMQ) in background        |
+| `make stop-core`       | Stop the core services                                                        |
+| `make logs-core`       | Tail the logs for core services                                               |
+| `make format`          | Format & lint backend (Python) and frontend (TypeScript) code                 |
+| `make migrate`         | Run backend database migrations                                               |
+| `make run-backend`     | Run the backend FastAPI server                                                |
+| `make run-frontend`    | Run the frontend Next.js development server                                   |
 
-  ```
-   cp .env.example .env
-  ```
+*Example usage:*
+```sh
+make start-core
+make run-backend
+make run-frontend
+```
 
-  You can modify the `.env` within this folder to add your own environment variables for the frontend application.
+You can always check available Makefile recipes by running:
+```sh
+make help
+```
+(or just inspecting the `Makefile` in the repo root).
 
-- Run the following command:
-  ```
-   corepack enable
-   pnpm install
-   pnpm dev
-  ```
-  This command will enable corepack, install the necessary dependencies with pnpm, and start the frontend application in development mode.
+---
 
 ### Checking if the application is running
 
@@ -169,127 +195,6 @@ poetry run cli gen-encrypt-key
 
 Then, replace the existing key in the `autogpt_platform/backend/.env` file with the new one.
 
-!!! Note
-    *The steps below are an alternative to [Running the backend services](#running-the-backend-services)*
-
-<details>
-<summary><strong>Alternate Steps</strong></summary>
-
-#### AutoGPT Agent Server (OLD)
-This is an initial project for creating the next generation of agent execution, which is an AutoGPT agent server.
-The agent server will enable the creation of composite multi-agent systems that utilize AutoGPT agents and other non-agent components as its primitives.
-
-##### Docs
-
-You can access the docs for the [AutoGPT Agent Server here](https://docs.agpt.co/#1-autogpt-server).
-
-##### Setup
-
-We use the Poetry to manage the dependencies. To set up the project, follow these steps inside this directory:
-
-0. Install Poetry
-
-```sh
-pip install poetry
-```
-  
-1. Configure Poetry to use .venv in your project directory
-
-```sh
-  poetry config virtualenvs.in-project true
-```
-
-2. Enter the poetry shell
-
-```sh
-poetry shell
-```
-
-3. Install dependencies
-
-```sh
-poetry install
-```
-
-4. Copy .env.example to .env
-
-```sh
-cp .env.example .env
-```
-
-5. Generate the Prisma client
-
-```sh
-poetry run prisma generate
-```
-
-> In case Prisma generates the client for the global Python installation instead of the virtual environment, the current mitigation is to just uninstall the global Prisma package:
->
-> ```sh
-> pip uninstall prisma
-> ```
->
-> Then run the generation again. The path *should* look something like this:  
-> `<some path>/pypoetry/virtualenvs/backend-TQIRSwR6-py3.12/bin/prisma`
-
-6. Migrate the database. Be careful because this deletes current data in the database.
-
-```sh
-docker compose up db -d
-poetry run prisma migrate deploy
-```
-    
-</details>
-
-
-### Starting the AutoGPT server without Docker
-
-To run the server locally, start in the autogpt_platform folder:
-
-```sh
-cd ..
-```
-
-Run the following command to run database in docker but the application locally:
-
-```sh
-docker compose --profile local up deps --build --detach
-cd backend
-poetry run app
-```
-
-### Starting the AutoGPT server with Docker
-
-Run the following command to build the dockerfiles:
-
-```sh
-docker compose build
-```
-
-Run the following command to run the app:
-
-```sh
-docker compose up
-```
-
-Run the following to automatically rebuild when code changes, in another terminal:
-
-```sh
-docker compose watch
-```
-
-Run the following command to shut down:
-
-```sh
-docker compose down
-```
-
-If you run into issues with dangling orphans, try:
-
-```sh
-docker compose down --volumes --remove-orphans && docker-compose up --force-recreate --renew-anon-volumes --remove-orphans  
-```
-
 ### 📌 Windows Installation Note
 
 When installing Docker on Windows, it is **highly recommended** to select **WSL 2** instead of Hyper-V. Using Hyper-V can cause compatibility issues with Supabase, leading to the `supabase-db` container being marked as **unhealthy**.
@@ -297,9 +202,9 @@ When installing Docker on Windows, it is **highly recommended** to select **WSL 
 #### **Steps to enable WSL 2 for Docker:**
 1. Install [WSL 2](https://learn.microsoft.com/en-us/windows/wsl/install).
 2. Ensure that your Docker settings use WSL 2 as the default backend:
-  - Open **Docker Desktop**.
-  - Navigate to **Settings > General**.
-  - Check **Use the WSL 2 based engine**.
+   - Open **Docker Desktop**.
+   - Navigate to **Settings > General**.
+   - Check **Use the WSL 2 based engine**.
 3. Restart **Docker Desktop**.
 
 #### **Already Installed Docker with Hyper-V?**
@@ -316,13 +221,105 @@ For more details, refer to [Docker's official documentation](https://docs.docker
 
 ## Development
 
-### Formatting & Linting
+### Frontend Development
+
+#### Running the frontend locally
+
+To run the frontend locally, you need to have Node.js and PNPM installed on your machine.
+
+Install [Node.js](https://nodejs.org/en/download/) to manage dependencies and run the frontend application.
+
+Install [PNPM](https://pnpm.io/installation) to manage the frontend dependencies.
+
+Run the service dependencies (backend, database, message queues, etc.):
+```sh
+docker compose --profile local up deps_backend --build --detach
+```
+
+Go to the `autogpt_platform/frontend` directory:
+```sh
+cd frontend
+```
+
+Install the dependencies:
+```sh
+pnpm install
+```
+
+Generate the API client:
+```sh
+pnpm generate:api-client
+```
+
+Run the frontend application:
+```sh
+pnpm dev
+```
+
+#### Formatting & Linting
+
 Auto formatter and linter are set up in the project. To run them:
 
-Install:
+Format the code:
+```sh
+pnpm format
+```
+
+Lint the code:
+```sh
+pnpm lint
+```
+*Or for both frontend and backend, from the root:*
+```sh
+make format
+```
+
+#### Testing
+
+To run the tests, you can use the following command:
+```sh
+pnpm test
+```
+
+### Backend Development
+
+#### Running the backend locally
+
+To run the backend locally, you need to have Python 3.10 or higher installed on your machine.
+
+Install [Poetry](https://python-poetry.org/docs/#installation) to manage dependencies and virtual environments.
+
+Run the backend dependencies (database, message queues, etc.):
+```sh
+docker compose --profile local up deps --build --detach
+```
+*Or equivalently with Makefile:*
+```sh
+make start-core
+```
+
+Go to the `autogpt_platform/backend` directory:
+```sh
+cd backend
+```
+
+Install the dependencies:
 ```sh
 poetry install --with dev
 ```
+
+Run the backend server:
+```sh
+poetry run app
+```
+*Or from within `autogpt_platform`:*
+```sh
+make run-backend
+```
+
+#### Formatting & Linting
+
+Auto formatter and linter are set up in the project. To run them:
 
 Format the code:
 ```sh
@@ -333,71 +330,18 @@ Lint the code:
 ```sh
 poetry run lint
 ```
+*Or format both frontend and backend at once:*
+```sh
+make format
+```
 
-### Testing
+#### Testing
 
 To run the tests:
 
 ```sh
-poetry run test
+poetry run pytest -s 
 ```
-
-To update stored snapshots after intentional API changes:
-
-```sh
-pytest --snapshot-update
-```
-
-## Project Outline
-
-The current project has the following main modules:
-
-#### **blocks**
-
-This module stores all the Agent Blocks, which are reusable components to build a graph that represents the agent's behavior.
-
-#### **data**
-
-This module stores the logical model that is persisted in the database.
-It abstracts the database operations into functions that can be called by the service layer.
-Any code that interacts with Prisma objects or the database should reside in this module.
-The main models are:
-* `block`: anything related to the block used in the graph
-* `execution`: anything related to the execution graph execution
-* `graph`: anything related to the graph, node, and its relations
-
-#### **execution**
-
-This module stores the business logic of executing the graph.
-It currently has the following main modules:
-* `manager`: A service that consumes the queue of the graph execution and executes the graph. It contains both pieces of logic.
-* `scheduler`: A service that triggers scheduled graph execution based on a cron expression. It pushes an execution request to the manager.
-
-#### **server**
-
-This module stores the logic for the server API.
-It contains all the logic used for the API that allows the client to create, execute, and monitor the graph and its execution.
-This API service interacts with other services like those defined in `manager` and `scheduler`.
-
-#### **utils**
-
-This module stores utility functions that are used across the project.
-Currently, it has two main modules:
-* `process`: A module that contains the logic to spawn a new process.
-* `service`: A module that serves as a parent class for all the services in the project.
-
-## Service Communication
-
-Currently, there are only 3 active services:
-
-- AgentServer (the API, defined in `server.py`)
-- ExecutionManager (the executor, defined in `manager.py`)
-- Scheduler (the scheduler, defined in `scheduler.py`)
-
-The services run in independent Python processes and communicate through an IPC.
-A communication layer (`service.py`) is created to decouple the communication library from the implementation.
-
-Currently, the IPC is done using Pyro5 and abstracted in a way that allows a function decorated with `@expose` to be called from a different process.
 
 ## Adding a New Agent Block
 
@@ -408,4 +352,5 @@ To add a new agent block, you need to create a new class that inherits from `Blo
 * `run` method: the main logic of the block.
 * `test_input` & `test_output`: the sample input and output data for the block, which will be used to auto-test the block.
 * You can mock the functions declared in the block using the `test_mock` field for your unit tests.
-* Once you finish creating the block, you can test it by running `poetry run pytest -s test/block/test_block.py`.
+* Once you finish creating the block, you can test it by running `poetry run pytest backend/blocks/test/test_block.py -s`.
+* Create a Pull Request to the `dev` branch of the repository with your changes so you can share it with the community :)

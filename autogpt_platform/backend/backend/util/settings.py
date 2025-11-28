@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from enum import Enum
 from typing import Any, Dict, Generic, List, Set, Tuple, Type, TypeVar
 
@@ -14,6 +15,17 @@ from pydantic_settings import (
 from backend.util.data import get_data_path
 
 T = TypeVar("T", bound=BaseSettings)
+
+_SERVICE_NAME = "MainProcess"
+
+
+def get_service_name():
+    return _SERVICE_NAME
+
+
+def set_service_name(name: str):
+    global _SERVICE_NAME
+    _SERVICE_NAME = name
 
 
 class AppEnvironment(str, Enum):
@@ -59,6 +71,24 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
         le=1000,
         description="Maximum number of workers to use for graph execution.",
     )
+
+    requeue_by_republishing: bool = Field(
+        default=True,
+        description="Send rate-limited messages to back of queue by republishing instead of front requeue to prevent blocking other users.",
+    )
+
+    # FastAPI Thread Pool Configuration
+    # IMPORTANT: FastAPI automatically offloads ALL sync functions to a thread pool:
+    # - Sync endpoint functions (def instead of async def)
+    # - Sync dependency functions (def instead of async def)
+    # - Manually called run_in_threadpool() operations
+    # Default thread pool size is only 40, which becomes a bottleneck under high concurrency
+    fastapi_thread_pool_size: int = Field(
+        default=60,
+        ge=40,
+        le=500,
+        description="Thread pool size for FastAPI sync operations. All sync endpoints and dependencies automatically use this pool. Higher values support more concurrent sync operations but use more memory.",
+    )
     pyro_host: str = Field(
         default="localhost",
         description="The default hostname of the Pyro server.",
@@ -68,8 +98,12 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
         description="The default timeout in seconds, for Pyro client connections.",
     )
     pyro_client_comm_retry: int = Field(
-        default=3,
+        default=100,
         description="The default number of retries for Pyro client connections.",
+    )
+    pyro_client_max_wait: float = Field(
+        default=30.0,
+        description="The maximum wait time in seconds for Pyro client retries.",
     )
     rpc_client_call_timeout: int = Field(
         default=300,
@@ -95,6 +129,10 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
         default=500,
         description="Maximum number of credits above the balance to be auto-approved.",
     )
+    low_balance_threshold: int = Field(
+        default=500,
+        description="Credit threshold for low balance notifications (100 = $1, default 500 = $5)",
+    )
     refund_notification_email: str = Field(
         default="refund@agpt.co",
         description="Email address to send refund notifications to.",
@@ -119,9 +157,32 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
         default=5 * 60,
         description="Time in seconds after which the execution stuck on QUEUED status is considered late.",
     )
+    cluster_lock_timeout: int = Field(
+        default=300,
+        description="Cluster lock timeout in seconds for graph execution coordination.",
+    )
     execution_late_notification_checkrange_secs: int = Field(
         default=60 * 60,
         description="Time in seconds for how far back to check for the late executions.",
+    )
+    max_concurrent_graph_executions_per_user: int = Field(
+        default=25,
+        ge=1,
+        le=1000,
+        description="Maximum number of concurrent graph executions allowed per user per graph.",
+    )
+
+    block_error_rate_threshold: float = Field(
+        default=0.5,
+        description="Error rate threshold (0.0-1.0) for triggering block error alerts.",
+    )
+    block_error_rate_check_interval_secs: int = Field(
+        default=24 * 60 * 60,  # 24 hours
+        description="Interval in seconds between block error rate checks.",
+    )
+    block_error_include_top_blocks: int = Field(
+        default=3,
+        description="Number of top blocks with most errors to show when no blocks exceed threshold (0 to disable).",
     )
 
     model_config = SettingsConfigDict(
@@ -210,6 +271,7 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
         default="localhost",
         description="The host for the RabbitMQ server",
     )
+
     rabbitmq_port: int = Field(
         default=5672,
         description="The port for the RabbitMQ server",
@@ -218,6 +280,21 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
     rabbitmq_vhost: str = Field(
         default="/",
         description="The vhost for the RabbitMQ server",
+    )
+
+    redis_host: str = Field(
+        default="localhost",
+        description="The host for the Redis server",
+    )
+
+    redis_port: int = Field(
+        default=6379,
+        description="The port for the Redis server",
+    )
+
+    redis_password: str = Field(
+        default="",
+        description="The password for the Redis server (empty string if no password)",
     )
 
     postmark_sender_email: str = Field(
@@ -237,6 +314,10 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
         default="local-alerts",
         description="The Discord channel for the platform",
     )
+    product_alert_discord_channel: str = Field(
+        default="product-alerts",
+        description="The Discord channel for product alerts (low balance, zero balance, etc.)",
+    )
 
     clamav_service_host: str = Field(
         default="localhost",
@@ -253,6 +334,59 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
     clamav_service_enabled: bool = Field(
         default=True,
         description="Whether virus scanning is enabled or not",
+    )
+    clamav_max_concurrency: int = Field(
+        default=10,
+        description="The maximum number of concurrent scans to perform",
+    )
+    clamav_mark_failed_scans_as_clean: bool = Field(
+        default=False,
+        description="Whether to mark failed scans as clean or not",
+    )
+
+    enable_example_blocks: bool = Field(
+        default=False,
+        description="Whether to enable example blocks in production",
+    )
+
+    cloud_storage_cleanup_interval_hours: int = Field(
+        default=6,
+        ge=1,
+        le=24,
+        description="Hours between cloud storage cleanup runs (1-24 hours)",
+    )
+
+    upload_file_size_limit_mb: int = Field(
+        default=256,
+        ge=1,
+        le=1024,
+        description="Maximum file size in MB for file uploads (1-1024 MB)",
+    )
+
+    # AutoMod configuration
+    automod_enabled: bool = Field(
+        default=False,
+        description="Whether AutoMod content moderation is enabled",
+    )
+    automod_api_url: str = Field(
+        default="",
+        description="AutoMod API base URL - Make sure it ends in /api",
+    )
+    automod_timeout: int = Field(
+        default=30,
+        description="Timeout in seconds for AutoMod API requests",
+    )
+    automod_retry_attempts: int = Field(
+        default=3,
+        description="Number of retry attempts for AutoMod API requests",
+    )
+    automod_retry_delay: float = Field(
+        default=1.0,
+        description="Delay between retries for AutoMod API requests in seconds",
+    )
+    automod_fail_open: bool = Field(
+        default=False,
+        description="If True, allow execution to continue if AutoMod fails",
     )
 
     @field_validator("platform_base_url", "frontend_base_url")
@@ -284,39 +418,77 @@ class Config(UpdateTrackingModel["Config"], BaseSettings):
         description="Name of the event bus",
     )
 
+    notification_event_bus_name: str = Field(
+        default="notification_event",
+        description="Name of the websocket notification event bus",
+    )
+
     trust_endpoints_for_requests: List[str] = Field(
         default_factory=list,
         description="A whitelist of trusted internal endpoints for the backend to make requests to.",
     )
 
-    backend_cors_allow_origins: List[str] = Field(default_factory=list)
+    max_message_size_limit: int = Field(
+        default=16 * 1024 * 1024,  # 16 MB
+        description="Maximum message size limit for communication with the message bus",
+    )
+
+    backend_cors_allow_origins: List[str] = Field(
+        default=["http://localhost:3000"],
+        description="Allowed Origins for CORS. Supports exact URLs (http/https) or entries prefixed with "
+        '"regex:" to match via regular expression.',
+    )
 
     @field_validator("backend_cors_allow_origins")
     @classmethod
     def validate_cors_allow_origins(cls, v: List[str]) -> List[str]:
-        out = []
-        port = None
-        has_localhost = False
-        has_127_0_0_1 = False
-        for url in v:
-            url = url.strip()
-            if url.startswith(("http://", "https://")):
-                if "localhost" in url:
-                    port = url.split(":")[2]
-                    has_localhost = True
-                if "127.0.0.1" in url:
-                    port = url.split(":")[2]
-                    has_127_0_0_1 = True
-                out.append(url)
-            else:
-                raise ValueError(f"Invalid URL: {url}")
+        validated: List[str] = []
+        localhost_ports: set[str] = set()
+        ip127_ports: set[str] = set()
 
-        if has_127_0_0_1 and not has_localhost:
-            out.append(f"http://localhost:{port}")
-        if has_localhost and not has_127_0_0_1:
-            out.append(f"http://127.0.0.1:{port}")
+        for raw_origin in v:
+            origin = raw_origin.strip()
+            if origin.startswith("regex:"):
+                pattern = origin[len("regex:") :]
+                if not pattern:
+                    raise ValueError("Invalid regex pattern: pattern cannot be empty")
+                try:
+                    re.compile(pattern)
+                except re.error as exc:
+                    raise ValueError(
+                        f"Invalid regex pattern '{pattern}': {exc}"
+                    ) from exc
+                validated.append(origin)
+                continue
 
-        return out
+            if origin.startswith(("http://", "https://")):
+                if "localhost" in origin:
+                    try:
+                        port = origin.split(":")[2]
+                        localhost_ports.add(port)
+                    except IndexError as exc:
+                        raise ValueError(
+                            "localhost origins must include an explicit port, e.g. http://localhost:3000"
+                        ) from exc
+                if "127.0.0.1" in origin:
+                    try:
+                        port = origin.split(":")[2]
+                        ip127_ports.add(port)
+                    except IndexError as exc:
+                        raise ValueError(
+                            "127.0.0.1 origins must include an explicit port, e.g. http://127.0.0.1:3000"
+                        ) from exc
+                validated.append(origin)
+                continue
+
+            raise ValueError(f"Invalid URL or regex origin: {origin}")
+
+        for port in ip127_ports - localhost_ports:
+            validated.append(f"http://localhost:{port}")
+        for port in localhost_ports - ip127_ports:
+            validated.append(f"http://127.0.0.1:{port}")
+
+        return validated
 
     @classmethod
     def settings_customise_sources(
@@ -365,16 +537,6 @@ class Secrets(UpdateTrackingModel["Secrets"], BaseSettings):
         description="The secret key to use for the unsubscribe user by token",
     )
 
-    # Cloudflare Turnstile credentials
-    turnstile_secret_key: str = Field(
-        default="",
-        description="Cloudflare Turnstile backend secret key",
-    )
-    turnstile_verify_url: str = Field(
-        default="https://challenges.cloudflare.com/turnstile/v0/siteverify",
-        description="Cloudflare Turnstile verify URL",
-    )
-
     # OAuth server credentials for integrations
     # --8<-- [start:OAuthServerCredentialsExample]
     github_client_id: str = Field(default="", description="GitHub OAuth client ID")
@@ -394,13 +556,21 @@ class Secrets(UpdateTrackingModel["Secrets"], BaseSettings):
     twitter_client_secret: str = Field(
         default="", description="Twitter/X OAuth client secret"
     )
+    discord_client_id: str = Field(default="", description="Discord OAuth client ID")
+    discord_client_secret: str = Field(
+        default="", description="Discord OAuth client secret"
+    )
 
     openai_api_key: str = Field(default="", description="OpenAI API key")
+    openai_internal_api_key: str = Field(
+        default="", description="OpenAI Internal API key"
+    )
     aiml_api_key: str = Field(default="", description="'AI/ML API' key")
     anthropic_api_key: str = Field(default="", description="Anthropic API key")
     groq_api_key: str = Field(default="", description="Groq API key")
     open_router_api_key: str = Field(default="", description="Open Router API Key")
     llama_api_key: str = Field(default="", description="Llama API Key")
+    v0_api_key: str = Field(default="", description="v0 by Vercel API key")
 
     reddit_client_id: str = Field(default="", description="Reddit client ID")
     reddit_client_secret: str = Field(default="", description="Reddit client secret")
@@ -450,9 +620,20 @@ class Secrets(UpdateTrackingModel["Secrets"], BaseSettings):
     apollo_api_key: str = Field(default="", description="Apollo API Key")
     smartlead_api_key: str = Field(default="", description="SmartLead API Key")
     zerobounce_api_key: str = Field(default="", description="ZeroBounce API Key")
+    enrichlayer_api_key: str = Field(default="", description="Enrichlayer API Key")
 
+    # AutoMod API credentials
+    automod_api_key: str = Field(default="", description="AutoMod API key")
+
+    # LaunchDarkly feature flags
+    launch_darkly_sdk_key: str = Field(
+        default="",
+        description="The LaunchDarkly SDK key for feature flag management",
+    )
+
+    ayrshare_api_key: str = Field(default="", description="Ayrshare API Key")
+    ayrshare_jwt_key: str = Field(default="", description="Ayrshare private Key")
     # Add more secret fields as needed
-
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

@@ -1,24 +1,33 @@
-from backend.data.block import (
+from backend.sdk import (
     Block,
     BlockCategory,
     BlockManualWebhookConfig,
     BlockOutput,
-    BlockSchema,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+    ProviderBuilder,
+    ProviderName,
+    SchemaField,
 )
-from backend.data.model import SchemaField
-from backend.integrations.providers import ProviderName
-from backend.integrations.webhooks.generic import GenericWebhookType
+
+from ._webhook import GenericWebhooksManager, GenericWebhookType
+
+generic_webhook = (
+    ProviderBuilder("generic_webhook")
+    .with_webhook_manager(GenericWebhooksManager)
+    .build()
+)
 
 
 class GenericWebhookTriggerBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         payload: dict = SchemaField(hidden=True, default_factory=dict)
         constants: dict = SchemaField(
             description="The constants to be set when the block is put on the graph",
             default_factory=dict,
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         payload: dict = SchemaField(
             description="The complete webhook payload that was received from the generic webhook."
         )
@@ -36,7 +45,7 @@ class GenericWebhookTriggerBlock(Block):
             input_schema=GenericWebhookTriggerBlock.Input,
             output_schema=GenericWebhookTriggerBlock.Output,
             webhook_config=BlockManualWebhookConfig(
-                provider=ProviderName.GENERIC_WEBHOOK,
+                provider=ProviderName(generic_webhook.name),
                 webhook_type=GenericWebhookType.PLAIN,
             ),
             test_input={"constants": {"key": "value"}, "payload": self.example_payload},

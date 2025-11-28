@@ -2,7 +2,13 @@ import re
 
 from typing_extensions import TypedDict
 
-from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema
+from backend.data.block import (
+    Block,
+    BlockCategory,
+    BlockOutput,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+)
 from backend.data.model import SchemaField
 
 from ._api import get_api
@@ -16,14 +22,14 @@ from ._auth import (
 
 
 class GithubListPullRequestsBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
             placeholder="https://github.com/owner/repo",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         class PRItem(TypedDict):
             title: str
             url: str
@@ -31,7 +37,12 @@ class GithubListPullRequestsBlock(Block):
         pull_request: PRItem = SchemaField(
             title="Pull Request", description="PRs with their title and URL"
         )
-        error: str = SchemaField(description="Error message if listing issues failed")
+        pull_requests: list[PRItem] = SchemaField(
+            description="List of pull requests with their title and URL"
+        )
+        error: str = SchemaField(
+            description="Error message if listing pull requests failed"
+        )
 
     def __init__(self):
         super().__init__(
@@ -47,12 +58,21 @@ class GithubListPullRequestsBlock(Block):
             test_credentials=TEST_CREDENTIALS,
             test_output=[
                 (
+                    "pull_requests",
+                    [
+                        {
+                            "title": "Pull request 1",
+                            "url": "https://github.com/owner/repo/pull/1",
+                        }
+                    ],
+                ),
+                (
                     "pull_request",
                     {
                         "title": "Pull request 1",
                         "url": "https://github.com/owner/repo/pull/1",
                     },
-                )
+                ),
             ],
             test_mock={
                 "list_prs": lambda *args, **kwargs: [
@@ -88,12 +108,13 @@ class GithubListPullRequestsBlock(Block):
             credentials,
             input_data.repo_url,
         )
+        yield "pull_requests", pull_requests
         for pr in pull_requests:
             yield "pull_request", pr
 
 
 class GithubMakePullRequestBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
@@ -120,7 +141,7 @@ class GithubMakePullRequestBlock(Block):
             placeholder="Enter the base branch",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         number: int = SchemaField(description="Number of the created pull request")
         url: str = SchemaField(description="URL of the created pull request")
         error: str = SchemaField(
@@ -194,7 +215,7 @@ class GithubMakePullRequestBlock(Block):
 
 
 class GithubReadPullRequestBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         pr_url: str = SchemaField(
             description="URL of the GitHub pull request",
@@ -206,7 +227,7 @@ class GithubReadPullRequestBlock(Block):
             advanced=False,
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         title: str = SchemaField(description="Title of the pull request")
         body: str = SchemaField(description="Body of the pull request")
         author: str = SchemaField(description="User who created the pull request")
@@ -265,10 +286,26 @@ class GithubReadPullRequestBlock(Block):
         files = response.json()
         changes = []
         for file in files:
-            filename = file.get("filename", "")
-            status = file.get("status", "")
-            changes.append(f"{filename}: {status}")
-        return "\n".join(changes)
+            status: str = file.get("status", "")
+            diff: str = file.get("patch", "")
+            if status != "removed":
+                is_filename: str = file.get("filename", "")
+                was_filename: str = (
+                    file.get("previous_filename", is_filename)
+                    if status != "added"
+                    else ""
+                )
+            else:
+                is_filename = ""
+                was_filename: str = file.get("filename", "")
+
+            patch_header = ""
+            if was_filename:
+                patch_header += f"--- {was_filename}\n"
+            if is_filename:
+                patch_header += f"+++ {is_filename}\n"
+            changes.append(patch_header + diff)
+        return "\n\n".join(changes)
 
     async def run(
         self,
@@ -294,7 +331,7 @@ class GithubReadPullRequestBlock(Block):
 
 
 class GithubAssignPRReviewerBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         pr_url: str = SchemaField(
             description="URL of the GitHub pull request",
@@ -305,7 +342,7 @@ class GithubAssignPRReviewerBlock(Block):
             placeholder="Enter the reviewer's username",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         status: str = SchemaField(
             description="Status of the reviewer assignment operation"
         )
@@ -361,7 +398,7 @@ class GithubAssignPRReviewerBlock(Block):
 
 
 class GithubUnassignPRReviewerBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         pr_url: str = SchemaField(
             description="URL of the GitHub pull request",
@@ -372,7 +409,7 @@ class GithubUnassignPRReviewerBlock(Block):
             placeholder="Enter the reviewer's username",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         status: str = SchemaField(
             description="Status of the reviewer unassignment operation"
         )
@@ -428,14 +465,14 @@ class GithubUnassignPRReviewerBlock(Block):
 
 
 class GithubListPRReviewersBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         pr_url: str = SchemaField(
             description="URL of the GitHub pull request",
             placeholder="https://github.com/owner/repo/pull/1",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         class ReviewerItem(TypedDict):
             username: str
             url: str
@@ -443,6 +480,9 @@ class GithubListPRReviewersBlock(Block):
         reviewer: ReviewerItem = SchemaField(
             title="Reviewer",
             description="Reviewers with their username and profile URL",
+        )
+        reviewers: list[ReviewerItem] = SchemaField(
+            description="List of reviewers with their username and profile URL"
         )
         error: str = SchemaField(
             description="Error message if listing reviewers failed"
@@ -462,12 +502,21 @@ class GithubListPRReviewersBlock(Block):
             test_credentials=TEST_CREDENTIALS,
             test_output=[
                 (
+                    "reviewers",
+                    [
+                        {
+                            "username": "reviewer1",
+                            "url": "https://github.com/reviewer1",
+                        }
+                    ],
+                ),
+                (
                     "reviewer",
                     {
                         "username": "reviewer1",
                         "url": "https://github.com/reviewer1",
                     },
-                )
+                ),
             ],
             test_mock={
                 "list_reviewers": lambda *args, **kwargs: [
@@ -500,10 +549,12 @@ class GithubListPRReviewersBlock(Block):
         credentials: GithubCredentials,
         **kwargs,
     ) -> BlockOutput:
-        for reviewer in await self.list_reviewers(
+        reviewers = await self.list_reviewers(
             credentials,
             input_data.pr_url,
-        ):
+        )
+        yield "reviewers", reviewers
+        for reviewer in reviewers:
             yield "reviewer", reviewer
 
 

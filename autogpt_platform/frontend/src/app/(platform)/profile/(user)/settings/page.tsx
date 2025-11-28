@@ -1,33 +1,82 @@
-import * as React from "react";
-import { Metadata } from "next";
-import SettingsForm from "@/components/profile/settings/SettingsForm";
-import { getServerUser } from "@/lib/supabase/server/getServerUser";
-import { redirect } from "next/navigation";
-import { getUserPreferences } from "./actions";
+"use client";
 
-export const metadata: Metadata = {
-  title: "Settings - AutoGPT Platform",
-  description: "Manage your account settings and preferences.",
-};
+import { SettingsForm } from "@/app/(platform)/profile/(user)/settings/components/SettingsForm/SettingsForm";
+import { useTimezoneDetection } from "@/app/(platform)/profile/(user)/settings/useTimezoneDetection";
+import {
+  useGetV1GetNotificationPreferences,
+  useGetV1GetUserTimezone,
+} from "@/app/api/__generated__/endpoints/auth/auth";
+import { Text } from "@/components/atoms/Text/Text";
+import { ErrorCard } from "@/components/molecules/ErrorCard/ErrorCard";
+import { useSupabase } from "@/lib/supabase/hooks/useSupabase";
+import { useEffect } from "react";
+import SettingsLoading from "./loading";
 
-export default async function SettingsPage() {
-  const { user, error } = await getServerUser();
+export default function SettingsPage() {
+  const { user } = useSupabase();
 
-  if (error || !user) {
-    redirect("/login");
+  const {
+    data: preferences,
+    isError: preferencesError,
+    isLoading: preferencesLoading,
+    error: preferencesErrorData,
+    refetch: refetchPreferences,
+  } = useGetV1GetNotificationPreferences({
+    query: {
+      enabled: !!user,
+      select: (res) => (res.status === 200 ? res.data : null),
+    },
+  });
+
+  const { data: timezone, isLoading: timezoneLoading } =
+    useGetV1GetUserTimezone({
+      query: {
+        enabled: !!user,
+        select: (res) => {
+          return res.status === 200 ? String(res.data.timezone) : "not-set";
+        },
+      },
+    });
+
+  useTimezoneDetection(!!user ? timezone : undefined);
+
+  useEffect(() => {
+    document.title = "Settings – AutoGPT Platform";
+  }, []);
+
+  if (preferencesError) {
+    return (
+      <div className="container max-w-2xl py-10">
+        <ErrorCard
+          responseError={
+            preferencesErrorData
+              ? {
+                  detail: preferencesErrorData.detail,
+                }
+              : undefined
+          }
+          context="settings"
+          onRetry={() => {
+            void refetchPreferences();
+          }}
+        />
+      </div>
+    );
   }
 
-  const preferences = await getUserPreferences();
+  if (preferencesLoading || timezoneLoading || !user || !preferences) {
+    return <SettingsLoading />;
+  }
 
   return (
     <div className="container max-w-2xl space-y-6 py-10">
-      <div>
-        <h3 className="text-lg font-medium">My account</h3>
-        <p className="text-sm text-muted-foreground">
+      <div className="flex flex-col gap-2">
+        <Text variant="h3">My account</Text>
+        <Text variant="large">
           Manage your account settings and preferences.
-        </p>
+        </Text>
       </div>
-      <SettingsForm user={user} preferences={preferences} />
+      <SettingsForm preferences={preferences} user={user} timezone={timezone} />
     </div>
   );
 }

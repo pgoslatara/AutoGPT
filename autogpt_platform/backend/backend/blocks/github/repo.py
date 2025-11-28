@@ -2,7 +2,13 @@ import base64
 
 from typing_extensions import TypedDict
 
-from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema
+from backend.data.block import (
+    Block,
+    BlockCategory,
+    BlockOutput,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+)
 from backend.data.model import SchemaField
 
 from ._api import get_api
@@ -16,14 +22,14 @@ from ._auth import (
 
 
 class GithubListTagsBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
             placeholder="https://github.com/owner/repo",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         class TagItem(TypedDict):
             name: str
             url: str
@@ -31,7 +37,9 @@ class GithubListTagsBlock(Block):
         tag: TagItem = SchemaField(
             title="Tag", description="Tags with their name and file tree browser URL"
         )
-        error: str = SchemaField(description="Error message if listing tags failed")
+        tags: list[TagItem] = SchemaField(
+            description="List of tags with their name and file tree browser URL"
+        )
 
     def __init__(self):
         super().__init__(
@@ -47,12 +55,21 @@ class GithubListTagsBlock(Block):
             test_credentials=TEST_CREDENTIALS,
             test_output=[
                 (
+                    "tags",
+                    [
+                        {
+                            "name": "v1.0.0",
+                            "url": "https://github.com/owner/repo/tree/v1.0.0",
+                        }
+                    ],
+                ),
+                (
                     "tag",
                     {
                         "name": "v1.0.0",
                         "url": "https://github.com/owner/repo/tree/v1.0.0",
                     },
-                )
+                ),
             ],
             test_mock={
                 "list_tags": lambda *args, **kwargs: [
@@ -93,19 +110,20 @@ class GithubListTagsBlock(Block):
             credentials,
             input_data.repo_url,
         )
+        yield "tags", tags
         for tag in tags:
             yield "tag", tag
 
 
 class GithubListBranchesBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
             placeholder="https://github.com/owner/repo",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         class BranchItem(TypedDict):
             name: str
             url: str
@@ -114,7 +132,9 @@ class GithubListBranchesBlock(Block):
             title="Branch",
             description="Branches with their name and file tree browser URL",
         )
-        error: str = SchemaField(description="Error message if listing branches failed")
+        branches: list[BranchItem] = SchemaField(
+            description="List of branches with their name and file tree browser URL"
+        )
 
     def __init__(self):
         super().__init__(
@@ -130,12 +150,21 @@ class GithubListBranchesBlock(Block):
             test_credentials=TEST_CREDENTIALS,
             test_output=[
                 (
+                    "branches",
+                    [
+                        {
+                            "name": "main",
+                            "url": "https://github.com/owner/repo/tree/main",
+                        }
+                    ],
+                ),
+                (
                     "branch",
                     {
                         "name": "main",
                         "url": "https://github.com/owner/repo/tree/main",
                     },
-                )
+                ),
             ],
             test_mock={
                 "list_branches": lambda *args, **kwargs: [
@@ -176,12 +205,13 @@ class GithubListBranchesBlock(Block):
             credentials,
             input_data.repo_url,
         )
+        yield "branches", branches
         for branch in branches:
             yield "branch", branch
 
 
 class GithubListDiscussionsBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
@@ -191,13 +221,16 @@ class GithubListDiscussionsBlock(Block):
             description="Number of discussions to fetch", default=5
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         class DiscussionItem(TypedDict):
             title: str
             url: str
 
         discussion: DiscussionItem = SchemaField(
             title="Discussion", description="Discussions with their title and URL"
+        )
+        discussions: list[DiscussionItem] = SchemaField(
+            description="List of discussions with their title and URL"
         )
         error: str = SchemaField(
             description="Error message if listing discussions failed"
@@ -218,12 +251,21 @@ class GithubListDiscussionsBlock(Block):
             test_credentials=TEST_CREDENTIALS,
             test_output=[
                 (
+                    "discussions",
+                    [
+                        {
+                            "title": "Discussion 1",
+                            "url": "https://github.com/owner/repo/discussions/1",
+                        }
+                    ],
+                ),
+                (
                     "discussion",
                     {
                         "title": "Discussion 1",
                         "url": "https://github.com/owner/repo/discussions/1",
                     },
-                )
+                ),
             ],
             test_mock={
                 "list_discussions": lambda *args, **kwargs: [
@@ -279,19 +321,20 @@ class GithubListDiscussionsBlock(Block):
             input_data.repo_url,
             input_data.num_discussions,
         )
+        yield "discussions", discussions
         for discussion in discussions:
             yield "discussion", discussion
 
 
 class GithubListReleasesBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
             placeholder="https://github.com/owner/repo",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         class ReleaseItem(TypedDict):
             name: str
             url: str
@@ -300,7 +343,9 @@ class GithubListReleasesBlock(Block):
             title="Release",
             description="Releases with their name and file tree browser URL",
         )
-        error: str = SchemaField(description="Error message if listing releases failed")
+        releases: list[ReleaseItem] = SchemaField(
+            description="List of releases with their name and file tree browser URL"
+        )
 
     def __init__(self):
         super().__init__(
@@ -316,12 +361,21 @@ class GithubListReleasesBlock(Block):
             test_credentials=TEST_CREDENTIALS,
             test_output=[
                 (
+                    "releases",
+                    [
+                        {
+                            "name": "v1.0.0",
+                            "url": "https://github.com/owner/repo/releases/tag/v1.0.0",
+                        }
+                    ],
+                ),
+                (
                     "release",
                     {
                         "name": "v1.0.0",
                         "url": "https://github.com/owner/repo/releases/tag/v1.0.0",
                     },
-                )
+                ),
             ],
             test_mock={
                 "list_releases": lambda *args, **kwargs: [
@@ -357,12 +411,13 @@ class GithubListReleasesBlock(Block):
             credentials,
             input_data.repo_url,
         )
+        yield "releases", releases
         for release in releases:
             yield "release", release
 
 
 class GithubReadFileBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
@@ -378,7 +433,7 @@ class GithubReadFileBlock(Block):
             default="master",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         text_content: str = SchemaField(
             description="Content of the file (decoded as UTF-8 text)"
         )
@@ -386,7 +441,6 @@ class GithubReadFileBlock(Block):
             description="Raw base64-encoded content of the file"
         )
         size: int = SchemaField(description="The size of the file (in bytes)")
-        error: str = SchemaField(description="Error message if the file reading failed")
 
     def __init__(self):
         super().__init__(
@@ -449,7 +503,7 @@ class GithubReadFileBlock(Block):
 
 
 class GithubReadFolderBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
@@ -465,7 +519,7 @@ class GithubReadFolderBlock(Block):
             default="master",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         class DirEntry(TypedDict):
             name: str
             path: str
@@ -573,7 +627,7 @@ class GithubReadFolderBlock(Block):
 
 
 class GithubMakeBranchBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
@@ -588,7 +642,7 @@ class GithubMakeBranchBlock(Block):
             placeholder="source_branch_name",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         status: str = SchemaField(description="Status of the branch creation operation")
         error: str = SchemaField(
             description="Error message if the branch creation failed"
@@ -653,7 +707,7 @@ class GithubMakeBranchBlock(Block):
 
 
 class GithubDeleteBranchBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
@@ -664,7 +718,7 @@ class GithubDeleteBranchBlock(Block):
             placeholder="branch_name",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         status: str = SchemaField(description="Status of the branch deletion operation")
         error: str = SchemaField(
             description="Error message if the branch deletion failed"
@@ -714,7 +768,7 @@ class GithubDeleteBranchBlock(Block):
 
 
 class GithubCreateFileBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
@@ -737,7 +791,7 @@ class GithubCreateFileBlock(Block):
             default="Create new file",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         url: str = SchemaField(description="URL of the created file")
         sha: str = SchemaField(description="SHA of the commit")
         error: str = SchemaField(
@@ -816,7 +870,7 @@ class GithubCreateFileBlock(Block):
 
 
 class GithubUpdateFileBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
@@ -839,10 +893,9 @@ class GithubUpdateFileBlock(Block):
             default="Update file",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         url: str = SchemaField(description="URL of the updated file")
         sha: str = SchemaField(description="SHA of the commit")
-        error: str = SchemaField(description="Error message if the file update failed")
 
     def __init__(self):
         super().__init__(
@@ -922,7 +975,7 @@ class GithubUpdateFileBlock(Block):
 
 
 class GithubCreateRepositoryBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         name: str = SchemaField(
             description="Name of the repository to create",
@@ -946,7 +999,7 @@ class GithubCreateRepositoryBlock(Block):
             default="",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         url: str = SchemaField(description="URL of the created repository")
         clone_url: str = SchemaField(description="Git clone URL of the repository")
         error: str = SchemaField(
@@ -1025,14 +1078,14 @@ class GithubCreateRepositoryBlock(Block):
 
 
 class GithubListStargazersBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GithubCredentialsInput = GithubCredentialsField("repo")
         repo_url: str = SchemaField(
             description="URL of the GitHub repository",
             placeholder="https://github.com/owner/repo",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         class StargazerItem(TypedDict):
             username: str
             url: str
@@ -1040,6 +1093,9 @@ class GithubListStargazersBlock(Block):
         stargazer: StargazerItem = SchemaField(
             title="Stargazer",
             description="Stargazers with their username and profile URL",
+        )
+        stargazers: list[StargazerItem] = SchemaField(
+            description="List of stargazers with their username and profile URL"
         )
         error: str = SchemaField(
             description="Error message if listing stargazers failed"
@@ -1059,12 +1115,21 @@ class GithubListStargazersBlock(Block):
             test_credentials=TEST_CREDENTIALS,
             test_output=[
                 (
+                    "stargazers",
+                    [
+                        {
+                            "username": "octocat",
+                            "url": "https://github.com/octocat",
+                        }
+                    ],
+                ),
+                (
                     "stargazer",
                     {
                         "username": "octocat",
                         "url": "https://github.com/octocat",
                     },
-                )
+                ),
             ],
             test_mock={
                 "list_stargazers": lambda *args, **kwargs: [
@@ -1104,5 +1169,6 @@ class GithubListStargazersBlock(Block):
             credentials,
             input_data.repo_url,
         )
+        yield "stargazers", stargazers
         for stargazer in stargazers:
             yield "stargazer", stargazer

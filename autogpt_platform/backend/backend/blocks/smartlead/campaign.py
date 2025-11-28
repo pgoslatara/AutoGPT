@@ -16,22 +16,28 @@ from backend.blocks.smartlead.models import (
     SaveSequencesResponse,
     Sequence,
 )
-from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema
-from backend.data.model import SchemaField
+from backend.data.block import (
+    Block,
+    BlockCategory,
+    BlockOutput,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+)
+from backend.data.model import CredentialsField, SchemaField
 
 
 class CreateCampaignBlock(Block):
     """Create a campaign in SmartLead"""
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         name: str = SchemaField(
             description="The name of the campaign",
         )
-        credentials: SmartLeadCredentialsInput = SchemaField(
+        credentials: SmartLeadCredentialsInput = CredentialsField(
             description="SmartLead credentials",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         id: int = SchemaField(
             description="The ID of the created campaign",
         )
@@ -105,7 +111,7 @@ class CreateCampaignBlock(Block):
 class AddLeadToCampaignBlock(Block):
     """Add a lead to a campaign in SmartLead"""
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         campaign_id: int = SchemaField(
             description="The ID of the campaign to add the lead to",
         )
@@ -119,11 +125,11 @@ class AddLeadToCampaignBlock(Block):
             description="Settings for lead upload",
             default=LeadUploadSettings(),
         )
-        credentials: SmartLeadCredentialsInput = SchemaField(
+        credentials: SmartLeadCredentialsInput = CredentialsField(
             description="SmartLead credentials",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         campaign_id: int = SchemaField(
             description="The ID of the campaign the lead was added to (passed through)",
         )
@@ -242,7 +248,7 @@ class AddLeadToCampaignBlock(Block):
 class SaveCampaignSequencesBlock(Block):
     """Save sequences within a campaign"""
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         campaign_id: int = SchemaField(
             description="The ID of the campaign to save sequences for",
         )
@@ -251,11 +257,11 @@ class SaveCampaignSequencesBlock(Block):
             default_factory=list,
             advanced=False,
         )
-        credentials: SmartLeadCredentialsInput = SchemaField(
+        credentials: SmartLeadCredentialsInput = CredentialsField(
             description="SmartLead credentials",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         data: dict | str | None = SchemaField(
             description="Data from the API",
             default=None,

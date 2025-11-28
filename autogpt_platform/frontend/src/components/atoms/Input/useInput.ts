@@ -1,4 +1,4 @@
-import { InputProps } from "@/components/ui/input";
+import { InputProps } from "@/components/__legacy__/ui/input";
 import {
   filterNumberInput,
   filterPhoneInput,
@@ -9,6 +9,17 @@ import {
 
 interface ExtendedInputProps extends InputProps {
   decimalCount?: number;
+  type?:
+    | "text"
+    | "email"
+    | "password"
+    | "number"
+    | "amount"
+    | "tel"
+    | "url"
+    | "textarea"
+    | "date"
+    | "datetime-local";
 }
 
 export function useInput(args: ExtendedInputProps) {
@@ -54,5 +65,34 @@ export function useInput(args: ExtendedInputProps) {
     }
   }
 
-  return { handleInputChange };
+  function handleAmountValueChange(value?: string) {
+    if (!args.onChange) return;
+    const processedValue = value ?? "";
+
+    const syntheticEvent = {
+      // We only need target.value for our consumers
+      target: {
+        value: processedValue,
+      },
+    } as unknown as React.ChangeEvent<HTMLInputElement>;
+
+    args.onChange(syntheticEvent);
+  }
+
+  function handleTextareaChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+    if (args.onChange) {
+      // Create synthetic event with HTMLInputElement-like target for compatibility
+      const syntheticEvent = {
+        ...e,
+        target: {
+          ...e.target,
+          value: e.target.value,
+        },
+      } as unknown as React.ChangeEvent<HTMLInputElement>;
+
+      args.onChange(syntheticEvent);
+    }
+  }
+
+  return { handleInputChange, handleTextareaChange, handleAmountValueChange };
 }

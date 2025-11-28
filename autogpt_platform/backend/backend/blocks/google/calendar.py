@@ -8,9 +8,15 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from pydantic import BaseModel
 
-from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema
+from backend.data.block import (
+    Block,
+    BlockCategory,
+    BlockOutput,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+)
 from backend.data.model import SchemaField
-from backend.util.settings import AppEnvironment, Settings
+from backend.util.settings import Settings
 
 from ._auth import (
     GOOGLE_OAUTH_IS_CONFIGURED,
@@ -20,6 +26,8 @@ from ._auth import (
     GoogleCredentialsField,
     GoogleCredentialsInput,
 )
+
+settings = Settings()
 
 
 class CalendarEvent(BaseModel):
@@ -41,7 +49,7 @@ class CalendarEvent(BaseModel):
 
 
 class GoogleCalendarReadEventsBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GoogleCredentialsInput = GoogleCredentialsField(
             ["https://www.googleapis.com/auth/calendar.readonly"]
         )
@@ -71,7 +79,7 @@ class GoogleCalendarReadEventsBlock(Block):
             description="Include events you've declined", default=False
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         events: list[CalendarEvent] = SchemaField(
             description="List of calendar events in the requested time range",
             default_factory=list,
@@ -88,8 +96,6 @@ class GoogleCalendarReadEventsBlock(Block):
         )
 
     def __init__(self):
-        settings = Settings()
-
         # Create realistic test data for events
         test_now = datetime.now(tz=timezone.utc)
         test_tomorrow = test_now + timedelta(days=1)
@@ -116,8 +122,7 @@ class GoogleCalendarReadEventsBlock(Block):
             categories={BlockCategory.PRODUCTIVITY, BlockCategory.DATA},
             input_schema=GoogleCalendarReadEventsBlock.Input,
             output_schema=GoogleCalendarReadEventsBlock.Output,
-            disabled=not GOOGLE_OAUTH_IS_CONFIGURED
-            or settings.config.app_env == AppEnvironment.PRODUCTION,
+            disabled=not GOOGLE_OAUTH_IS_CONFIGURED,
             test_input={
                 "credentials": TEST_CREDENTIALS_INPUT,
                 "calendar_id": "primary",
@@ -224,8 +229,8 @@ class GoogleCalendarReadEventsBlock(Block):
                 else None
             ),
             token_uri="https://oauth2.googleapis.com/token",
-            client_id=Settings().secrets.google_client_id,
-            client_secret=Settings().secrets.google_client_secret,
+            client_id=settings.secrets.google_client_id,
+            client_secret=settings.secrets.google_client_secret,
             scopes=credentials.scopes,
         )
         return build("calendar", "v3", credentials=creds)
@@ -380,7 +385,7 @@ class RecurringEvent(BaseModel):
 
 
 class GoogleCalendarCreateEventBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: GoogleCredentialsInput = GoogleCredentialsField(
             ["https://www.googleapis.com/auth/calendar"]
         )
@@ -434,24 +439,20 @@ class GoogleCalendarCreateEventBlock(Block):
             default_factory=lambda: [ReminderPreset.TEN_MINUTES],
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         event_id: str = SchemaField(description="ID of the created event")
         event_link: str = SchemaField(
             description="Link to view the event in Google Calendar"
         )
-        error: str = SchemaField(description="Error message if event creation failed")
 
     def __init__(self):
-        settings = Settings()
-
         super().__init__(
             id="ed2ec950-fbff-4204-94c0-023fb1d625e0",
             description="This block creates a new event in Google Calendar with customizable parameters.",
             categories={BlockCategory.PRODUCTIVITY},
             input_schema=GoogleCalendarCreateEventBlock.Input,
             output_schema=GoogleCalendarCreateEventBlock.Output,
-            disabled=not GOOGLE_OAUTH_IS_CONFIGURED
-            or settings.config.app_env == AppEnvironment.PRODUCTION,
+            disabled=not GOOGLE_OAUTH_IS_CONFIGURED,
             test_input={
                 "credentials": TEST_CREDENTIALS_INPUT,
                 "event_title": "Team Meeting",
@@ -575,8 +576,8 @@ class GoogleCalendarCreateEventBlock(Block):
                 else None
             ),
             token_uri="https://oauth2.googleapis.com/token",
-            client_id=Settings().secrets.google_client_id,
-            client_secret=Settings().secrets.google_client_secret,
+            client_id=settings.secrets.google_client_id,
+            client_secret=settings.secrets.google_client_secret,
             scopes=credentials.scopes,
         )
         return build("calendar", "v3", credentials=creds)

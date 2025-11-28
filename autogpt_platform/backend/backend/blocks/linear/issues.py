@@ -1,24 +1,32 @@
-from backend.blocks.linear._api import LinearAPIException, LinearClient
-from backend.blocks.linear._auth import (
-    LINEAR_OAUTH_IS_CONFIGURED,
+from backend.sdk import (
+    APIKeyCredentials,
+    Block,
+    BlockCategory,
+    BlockOutput,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+    CredentialsMetaInput,
+    OAuth2Credentials,
+    SchemaField,
+)
+
+from ._api import LinearAPIException, LinearClient
+from ._config import (
     TEST_CREDENTIALS_INPUT_OAUTH,
     TEST_CREDENTIALS_OAUTH,
-    LinearCredentials,
-    LinearCredentialsField,
-    LinearCredentialsInput,
     LinearScope,
+    linear,
 )
-from backend.blocks.linear.models import CreateIssueResponse, Issue
-from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema
-from backend.data.model import SchemaField
+from .models import CreateIssueResponse, Issue
 
 
 class LinearCreateIssueBlock(Block):
     """Block for creating issues on Linear"""
 
-    class Input(BlockSchema):
-        credentials: LinearCredentialsInput = LinearCredentialsField(
-            scopes=[LinearScope.ISSUES_CREATE],
+    class Input(BlockSchemaInput):
+        credentials: CredentialsMetaInput = linear.credentials_field(
+            description="Linear credentials with issue creation permissions",
+            required_scopes={LinearScope.ISSUES_CREATE},
         )
         title: str = SchemaField(description="Title of the issue")
         description: str | None = SchemaField(description="Description of the issue")
@@ -36,16 +44,14 @@ class LinearCreateIssueBlock(Block):
             default=None,
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         issue_id: str = SchemaField(description="ID of the created issue")
         issue_title: str = SchemaField(description="Title of the created issue")
-        error: str = SchemaField(description="Error message if issue creation failed")
 
     def __init__(self):
         super().__init__(
             id="f9c68f55-dcca-40a8-8771-abf9601680aa",
             description="Creates a new issue on Linear",
-            disabled=not LINEAR_OAUTH_IS_CONFIGURED,
             input_schema=self.Input,
             output_schema=self.Output,
             categories={BlockCategory.PRODUCTIVITY, BlockCategory.ISSUE_TRACKING},
@@ -68,7 +74,7 @@ class LinearCreateIssueBlock(Block):
 
     @staticmethod
     async def create_issue(
-        credentials: LinearCredentials,
+        credentials: OAuth2Credentials | APIKeyCredentials,
         team_name: str,
         title: str,
         description: str | None = None,
@@ -94,7 +100,11 @@ class LinearCreateIssueBlock(Block):
         return response.issue.identifier, response.issue.title
 
     async def run(
-        self, input_data: Input, *, credentials: LinearCredentials, **kwargs
+        self,
+        input_data: Input,
+        *,
+        credentials: OAuth2Credentials,
+        **kwargs,
     ) -> BlockOutput:
         """Execute the issue creation"""
         try:
@@ -119,13 +129,14 @@ class LinearCreateIssueBlock(Block):
 class LinearSearchIssuesBlock(Block):
     """Block for searching issues on Linear"""
 
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         term: str = SchemaField(description="Term to search for issues")
-        credentials: LinearCredentialsInput = LinearCredentialsField(
-            scopes=[LinearScope.READ],
+        credentials: CredentialsMetaInput = linear.credentials_field(
+            description="Linear credentials with read permissions",
+            required_scopes={LinearScope.READ},
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         issues: list[Issue] = SchemaField(description="List of issues")
 
     def __init__(self):
@@ -134,7 +145,6 @@ class LinearSearchIssuesBlock(Block):
             description="Searches for issues on Linear",
             input_schema=self.Input,
             output_schema=self.Output,
-            disabled=not LINEAR_OAUTH_IS_CONFIGURED,
             test_input={
                 "term": "Test issue",
                 "credentials": TEST_CREDENTIALS_INPUT_OAUTH,
@@ -169,7 +179,7 @@ class LinearSearchIssuesBlock(Block):
 
     @staticmethod
     async def search_issues(
-        credentials: LinearCredentials,
+        credentials: OAuth2Credentials | APIKeyCredentials,
         term: str,
     ) -> list[Issue]:
         client = LinearClient(credentials=credentials)
@@ -177,7 +187,11 @@ class LinearSearchIssuesBlock(Block):
         return response
 
     async def run(
-        self, input_data: Input, *, credentials: LinearCredentials, **kwargs
+        self,
+        input_data: Input,
+        *,
+        credentials: OAuth2Credentials | APIKeyCredentials,
+        **kwargs,
     ) -> BlockOutput:
         """Execute the issue search"""
         try:
@@ -189,3 +203,106 @@ class LinearSearchIssuesBlock(Block):
             yield "error", str(e)
         except Exception as e:
             yield "error", f"Unexpected error: {str(e)}"
+
+
+class LinearGetProjectIssuesBlock(Block):
+    """Block for getting issues from a Linear project filtered by status and assignee"""
+
+    class Input(BlockSchemaInput):
+        credentials: CredentialsMetaInput = linear.credentials_field(
+            description="Linear credentials with read permissions",
+            required_scopes={LinearScope.READ},
+        )
+        project: str = SchemaField(description="Name of the project to get issues from")
+        status: str = SchemaField(
+            description="Status/state name to filter issues by (e.g., 'In Progress', 'Done')"
+        )
+        is_assigned: bool = SchemaField(
+            description="Filter by assignee status - True to get assigned issues, False to get unassigned issues",
+            default=False,
+        )
+        include_comments: bool = SchemaField(
+            description="Whether to include comments in the response",
+            default=False,
+        )
+
+    class Output(BlockSchemaOutput):
+        issues: list[Issue] = SchemaField(
+            description="List of issues matching the criteria"
+        )
+
+    def __init__(self):
+        super().__init__(
+            id="c7d3f1e8-45a9-4b2c-9f81-3e6a8d7c5b1a",
+            description="Gets issues from a Linear project filtered by status and assignee",
+            input_schema=self.Input,
+            output_schema=self.Output,
+            categories={BlockCategory.PRODUCTIVITY, BlockCategory.ISSUE_TRACKING},
+            test_input={
+                "project": "Test Project",
+                "status": "In Progress",
+                "is_assigned": False,
+                "include_comments": False,
+                "credentials": TEST_CREDENTIALS_INPUT_OAUTH,
+            },
+            test_credentials=TEST_CREDENTIALS_OAUTH,
+            test_output=[
+                (
+                    "issues",
+                    [
+                        Issue(
+                            id="abc123",
+                            identifier="TST-123",
+                            title="Test issue",
+                            description="Test description",
+                            priority=1,
+                        )
+                    ],
+                ),
+            ],
+            test_mock={
+                "get_project_issues": lambda *args, **kwargs: [
+                    Issue(
+                        id="abc123",
+                        identifier="TST-123",
+                        title="Test issue",
+                        description="Test description",
+                        priority=1,
+                    )
+                ]
+            },
+        )
+
+    @staticmethod
+    async def get_project_issues(
+        credentials: OAuth2Credentials | APIKeyCredentials,
+        project: str,
+        status: str,
+        is_assigned: bool,
+        include_comments: bool,
+    ) -> list[Issue]:
+        client = LinearClient(credentials=credentials)
+        response: list[Issue] = await client.try_get_issues(
+            project=project,
+            status=status,
+            is_assigned=is_assigned,
+            include_comments=include_comments,
+        )
+        return response
+
+    async def run(
+        self,
+        input_data: Input,
+        *,
+        credentials: OAuth2Credentials | APIKeyCredentials,
+        **kwargs,
+    ) -> BlockOutput:
+        """Execute getting project issues"""
+        issues = await self.get_project_issues(
+            credentials=credentials,
+            project=input_data.project,
+            status=input_data.status,
+            is_assigned=input_data.is_assigned,
+            include_comments=input_data.include_comments,
+        )
+        yield "issues", issues

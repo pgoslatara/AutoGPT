@@ -5,6 +5,8 @@ classic/original_autogpt/*.json
 auto_gpt_workspace/*
 *.mpeg
 .env
+# Root .env files
+/.env
 azure.yaml
 .vscode
 .idea/*
@@ -121,7 +123,6 @@ celerybeat.pid
 
 # Environments
 .direnv/
-.env
 .venv
 env/
 venv*/
@@ -177,6 +178,4 @@ autogpt_platform/backend/settings.py
 *.ign.*
 .test-contents
 .claude/settings.local.json
-
-# Auto generated client
-autogpt_platform/frontend/src/api/__generated__
+/autogpt_platform/backend/logs

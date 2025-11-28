@@ -4,44 +4,63 @@ This is the frontend for AutoGPT's next generation
 
 This project uses [**pnpm**](https://pnpm.io/) as the package manager via **corepack**. [Corepack](https://github.com/nodejs/corepack) is a Node.js tool that automatically manages package managers without requiring global installations.
 
+For architecture, conventions, data fetching, feature flags, design system usage, state management, and PR process, see [CONTRIBUTING.md](./CONTRIBUTING.md).
+
 ### Prerequisites
 
 Make sure you have Node.js 16.10+ installed. Corepack is included with Node.js by default.
 
-### ⚠️ Migrating from yarn
+## Setup
 
-> This project was previously using yarn1, make sure to clean up the old files if you set it up previously with yarn:
->
-> ```bash
-> rm -f yarn.lock && rm -rf node_modules
-> ```
->
-> Then follow the setup steps below.
+### 1. **Enable corepack** (run this once on your system):
 
-### Setup
+```bash
+corepack enable
+```
 
-1. **Enable corepack** (run this once on your system):
+This enables corepack to automatically manage pnpm based on the `packageManager` field in `package.json`.
 
-   ```bash
-   corepack enable
-   ```
+### 2. **Install dependencies**:
 
-   This enables corepack to automatically manage pnpm based on the `packageManager` field in `package.json`.
+```bash
+pnpm i
+```
 
-2. **Install dependencies**:
+### 3. **Start the development server**:
 
-   ```bash
-   pnpm i
-   ```
+#### Running the Front-end & Back-end separately
 
-3. **Start the development server**:
-   ```bash
-   pnpm dev
-   ```
+We recommend this approach if you are doing active development on the project. First spin up the Back-end:
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+```bash
+# on `autogpt_platform`
+docker compose --profile local up deps_backend -d
+# on `autogpt_platform/backend`
+poetry run app
+```
+
+Then start the Front-end:
+
+```bash
+# on `autogpt_platform/frontend`
+pnpm dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result. If the server starts on `http://localhost:3001` it means the Front-end is already running via Docker. You have to kill the container then or do `docker compose down`.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+
+#### Running both the Front-end and Back-end via Docker
+
+If you run:
+
+```bash
+# on `autogpt_platform`
+docker compose up -d
+```
+
+It will spin up the Back-end and Front-end via Docker. The Front-end will start on port `3000`. This might not be
+what you want when actively contributing to the Front-end as you won't have direct/easy access to the Next.js dev server.
 
 ### Subsequent Runs
 
@@ -60,11 +79,22 @@ Every time a new Front-end dependency is added by you or others, you will need t
 - `pnpm start` - Start production server
 - `pnpm lint` - Run ESLint and Prettier checks
 - `pnpm format` - Format code with Prettier
-- `pnpm type-check` - Run TypeScript type checking
+- `pnpm types` - Run TypeScript type checking
 - `pnpm test` - Run Playwright tests
 - `pnpm test-ui` - Run Playwright tests with UI
+- `pnpm fetch:openapi` - Fetch OpenAPI spec from backend
+- `pnpm generate:api-client` - Generate API client from OpenAPI spec
+- `pnpm generate:api` - Fetch OpenAPI spec and generate API client
 
 This project uses [`next/font`](https://nextjs.org/docs/basic-features/font-optimization) to automatically optimize and load Inter, a custom Google Font.
+
+## 🔄 Data Fetching
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidance on generated API hooks, SSR + hydration patterns, and usage examples. You generally do not need to run OpenAPI commands unless adding/modifying backend endpoints.
+
+## 🚩 Feature Flags
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for feature flag usage patterns, local development with mocks, and how to add new flags.
 
 ## 🚚 Deploy
 
@@ -124,7 +154,7 @@ By integrating Storybook into our development workflow, we can streamline UI dev
 - [**Tailwind CSS**](https://tailwindcss.com/) - Utility-first CSS framework
 - [**shadcn/ui**](https://ui.shadcn.com/) - Re-usable components built with Radix UI and Tailwind CSS
 - [**Radix UI**](https://www.radix-ui.com/) - Headless UI components for accessibility
-- [**Lucide React**](https://lucide.dev/guide/packages/lucide-react) - Beautiful & consistent icons
+- [**Phosphor Icons**](https://phosphoricons.com/) - Icon set used across the app
 - [**Framer Motion**](https://motion.dev/) - Animation library for React
 
 ### Development & Testing

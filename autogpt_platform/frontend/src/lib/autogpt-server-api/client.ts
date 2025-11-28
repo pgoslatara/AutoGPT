@@ -1,8 +1,12 @@
+import { IMPERSONATION_HEADER_NAME } from "@/lib/constants";
+import { ImpersonationState } from "@/lib/impersonation";
 import { getWebSocketToken } from "@/lib/supabase/actions";
 import { getServerSupabase } from "@/lib/supabase/server/getServerSupabase";
+import { environment } from "@/services/environment";
+import { Key, storage } from "@/services/storage/local-storage";
+import * as Sentry from "@sentry/nextjs";
 import { createBrowserClient } from "@supabase/ssr";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { proxyApiRequest, proxyFileUpload } from "./proxy-action";
 import type {
   AddUserCreditsResponse,
   AnalyticsDetails,
@@ -24,9 +28,11 @@ import type {
   GraphExecution,
   GraphExecutionID,
   GraphExecutionMeta,
+  GraphExecutionsResponse,
   GraphID,
   GraphMeta,
   GraphUpdateable,
+  HostScopedCredentials,
   LibraryAgent,
   LibraryAgentID,
   LibraryAgentPreset,
@@ -63,9 +69,10 @@ import type {
   UserOnboarding,
   UserPasswordCredentials,
   UsersBalanceHistoryResponse,
+  WebSocketNotification,
 } from "./types";
 
-const isClient = typeof window !== "undefined";
+const isClient = environment.isClientSide();
 
 export default class BackendAPI {
   private baseUrl: string;
@@ -75,6 +82,7 @@ export default class BackendAPI {
   private wsOnConnectHandlers: Set<() => void> = new Set();
   private wsOnDisconnectHandlers: Set<() => void> = new Set();
   private wsMessageHandlers: Record<string, Set<(data: any) => void>> = {};
+  private isIntentionallyDisconnected: boolean = false;
 
   readonly HEARTBEAT_INTERVAL = 100_000; // 100 seconds
   readonly HEARTBEAT_TIMEOUT = 10_000; // 10 seconds
@@ -82,10 +90,8 @@ export default class BackendAPI {
   heartbeatTimeoutID: number | null = null;
 
   constructor(
-    baseUrl: string = process.env.NEXT_PUBLIC_AGPT_SERVER_URL ||
-      "http://localhost:8006/api",
-    wsUrl: string = process.env.NEXT_PUBLIC_AGPT_WS_SERVER_URL ||
-      "ws://localhost:8001/ws",
+    baseUrl: string = environment.getAGPTServerApiUrl(),
+    wsUrl: string = environment.getAGPTWsServerUrl(),
   ) {
     this.baseUrl = baseUrl;
     this.wsUrl = wsUrl;
@@ -94,9 +100,11 @@ export default class BackendAPI {
   private async getSupabaseClient(): Promise<SupabaseClient | null> {
     return isClient
       ? createBrowserClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL!,
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-          { isSingleton: true },
+          environment.getSupabaseUrl(),
+          environment.getSupabaseAnonKey(),
+          {
+            isSingleton: true,
+          },
         )
       : await getServerSupabase();
   }
@@ -266,7 +274,7 @@ export default class BackendAPI {
     version: number,
     inputs: { [key: string]: any } = {},
     credentials_inputs: { [key: string]: CredentialsMetaInput } = {},
-  ): Promise<{ graph_exec_id: GraphExecutionID }> {
+  ): Promise<GraphExecutionMeta> {
     return this._request("POST", `/graphs/${id}/execute/${version}`, {
       inputs,
       credentials_inputs,
@@ -279,7 +287,7 @@ export default class BackendAPI {
     );
   }
 
-  getGraphExecutions(graphID: GraphID): Promise<GraphExecutionMeta[]> {
+  getGraphExecutions(graphID: GraphID): Promise<GraphExecutionsResponse> {
     return this._get(`/graphs/${graphID}/executions`).then((results) =>
       results.map(parseGraphExecutionTimestamps),
     );
@@ -345,6 +353,20 @@ export default class BackendAPI {
       `/integrations/${credentials.provider}/credentials`,
       { ...credentials, type: "user_password" },
     );
+  }
+
+  createHostScopedCredentials(
+    credentials: Omit<HostScopedCredentials, "id" | "type">,
+  ): Promise<HostScopedCredentials> {
+    return this._request(
+      "POST",
+      `/integrations/${credentials.provider}/credentials`,
+      { ...credentials, type: "host_scoped" },
+    );
+  }
+
+  listProviders(): Promise<string[]> {
+    return this._get("/integrations/providers");
   }
 
   listCredentials(provider?: string): Promise<CredentialsMetaResponse[]> {
@@ -457,7 +479,7 @@ export default class BackendAPI {
     );
   }
 
-  getAgentMetaByStoreListingVersionId(
+  getGraphMetaByStoreListingVersionID(
     storeListingVersionID: string,
   ): Promise<GraphMeta> {
     return this._get(`/store/graph/${storeListingVersionID}`);
@@ -510,9 +532,35 @@ export default class BackendAPI {
   }
 
   uploadStoreSubmissionMedia(file: File): Promise<string> {
-    const formData = new FormData();
-    formData.append("file", file);
     return this._uploadFile("/store/submissions/media", file);
+  }
+
+  uploadFile(
+    file: File,
+    provider: string = "gcs",
+    expiration_hours: number = 24,
+    onProgress?: (progress: number) => void,
+  ): Promise<{
+    file_uri: string;
+    file_name: string;
+    size: number;
+    content_type: string;
+    expires_in_hours: number;
+  }> {
+    return this._uploadFileWithProgress(
+      "/files/upload",
+      file,
+      {
+        provider,
+        expiration_hours,
+      },
+      onProgress,
+    ).then((response) => {
+      if (typeof response === "string") {
+        return JSON.parse(response);
+      }
+      return response;
+    });
   }
 
   updateStoreProfile(profile: ProfileDetails): Promise<ProfileDetails> {
@@ -591,6 +639,7 @@ export default class BackendAPI {
     search?: string;
     page?: number;
     page_size?: number;
+    transaction_filter?: string;
   }): Promise<UsersBalanceHistoryResponse> {
     return this._get("/credits/admin/users_history", params);
   }
@@ -614,6 +663,13 @@ export default class BackendAPI {
     return this._get("/library/agents", params);
   }
 
+  listFavoriteLibraryAgents(params?: {
+    page?: number;
+    page_size?: number;
+  }): Promise<LibraryAgentResponse> {
+    return this._get("/library/agents/favorites", params);
+  }
+
   getLibraryAgent(id: LibraryAgentID): Promise<LibraryAgent> {
     return this._get(`/library/agents/${id}`);
   }
@@ -622,6 +678,15 @@ export default class BackendAPI {
     storeListingVersionId: string,
   ): Promise<LibraryAgent | null> {
     return this._get(`/library/agents/marketplace/${storeListingVersionId}`);
+  }
+
+  getLibraryAgentByGraphID(
+    graphID: GraphID,
+    graphVersion?: number,
+  ): Promise<LibraryAgent> {
+    return this._get(`/library/agents/by-graph/${graphID}`, {
+      version: graphVersion,
+    });
   }
 
   addMarketplaceAgentToLibrary(
@@ -651,21 +716,16 @@ export default class BackendAPI {
     return this._request("POST", `/library/agents/${libraryAgentId}/fork`);
   }
 
-  async setupAgentTrigger(
-    libraryAgentID: LibraryAgentID,
-    params: {
-      name: string;
-      description?: string;
-      trigger_config: Record<string, any>;
-      agent_credentials: Record<string, CredentialsMetaInput>;
-    },
-  ): Promise<LibraryAgentPreset> {
+  async setupAgentTrigger(params: {
+    name: string;
+    description?: string;
+    graph_id: GraphID;
+    graph_version: number;
+    trigger_config: Record<string, any>;
+    agent_credentials: Record<string, CredentialsMetaInput>;
+  }): Promise<LibraryAgentPreset> {
     return parseLibraryAgentPresetTimestamp(
-      await this._request(
-        "POST",
-        `/library/agents/${libraryAgentID}/setup-trigger`,
-        params,
-      ),
+      await this._request("POST", `/library/presets/setup-trigger`, params),
     );
   }
 
@@ -720,10 +780,12 @@ export default class BackendAPI {
 
   executeLibraryAgentPreset(
     presetID: LibraryAgentPresetID,
-    inputs?: { [key: string]: any },
-  ): Promise<{ id: GraphExecutionID }> {
+    inputs?: Record<string, any>,
+    credential_inputs?: Record<string, CredentialsMetaInput>,
+  ): Promise<GraphExecutionMeta> {
     return this._request("POST", `/library/presets/${presetID}/execute`, {
       inputs,
+      credential_inputs,
     });
   }
 
@@ -731,20 +793,33 @@ export default class BackendAPI {
   /////////// SCHEDULES ////////////
   //////////////////////////////////
 
-  async createSchedule(schedule: ScheduleCreatable): Promise<Schedule> {
-    return this._request("POST", `/schedules`, schedule).then(
-      parseScheduleTimestamp,
+  async createGraphExecutionSchedule(
+    params: ScheduleCreatable,
+  ): Promise<Schedule> {
+    return this._request(
+      "POST",
+      `/graphs/${params.graph_id}/schedules`,
+      params,
+    ).then(parseScheduleTimestamp);
+  }
+
+  async listGraphExecutionSchedules(graphID: GraphID): Promise<Schedule[]> {
+    return this._get(`/graphs/${graphID}/schedules`).then((schedules) =>
+      schedules.map(parseScheduleTimestamp),
     );
   }
 
-  async deleteSchedule(scheduleId: ScheduleID): Promise<{ id: string }> {
-    return this._request("DELETE", `/schedules/${scheduleId}`);
-  }
-
-  async listSchedules(): Promise<Schedule[]> {
+  /** @deprecated only used in legacy `Monitor` */
+  async listAllGraphsExecutionSchedules(): Promise<Schedule[]> {
     return this._get(`/schedules`).then((schedules) =>
       schedules.map(parseScheduleTimestamp),
     );
+  }
+
+  async deleteGraphExecutionSchedule(
+    scheduleID: ScheduleID,
+  ): Promise<{ id: ScheduleID }> {
+    return this._request("DELETE", `/schedules/${scheduleID}`);
   }
 
   //////////////////////////////////
@@ -780,8 +855,131 @@ export default class BackendAPI {
     const formData = new FormData();
     formData.append("file", file);
 
-    // Use proxy server action for secure file upload
-    return await proxyFileUpload(path, formData, this.baseUrl);
+    if (isClient) {
+      return this._makeClientFileUpload(path, formData);
+    } else {
+      return this._makeServerFileUpload(path, formData);
+    }
+  }
+
+  private async _uploadFileWithProgress(
+    path: string,
+    file: File,
+    params?: Record<string, any>,
+    onProgress?: (progress: number) => void,
+  ): Promise<string> {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    if (isClient) {
+      return this._makeClientFileUploadWithProgress(
+        path,
+        formData,
+        params,
+        onProgress,
+      );
+    } else {
+      return this._makeServerFileUploadWithProgress(path, formData, params);
+    }
+  }
+
+  private async _makeClientFileUpload(
+    path: string,
+    formData: FormData,
+  ): Promise<string> {
+    // Dynamic import is required even for client-only functions because helpers.ts
+    // has server-only imports (like getServerSupabase) at the top level. Static imports
+    // would bundle server-only code into the client bundle, causing runtime errors.
+    const { buildClientUrl, handleFetchError } = await import("./helpers");
+
+    const uploadUrl = buildClientUrl(path);
+
+    const response = await fetch(uploadUrl, {
+      method: "POST",
+      body: formData,
+      credentials: "include",
+    });
+
+    if (!response.ok) {
+      throw await handleFetchError(response);
+    }
+
+    return await response.json();
+  }
+
+  private async _makeServerFileUpload(
+    path: string,
+    formData: FormData,
+  ): Promise<string> {
+    const { makeAuthenticatedFileUpload, buildServerUrl } = await import(
+      "./helpers"
+    );
+    const url = buildServerUrl(path);
+    return await makeAuthenticatedFileUpload(url, formData);
+  }
+
+  private async _makeClientFileUploadWithProgress(
+    path: string,
+    formData: FormData,
+    params?: Record<string, any>,
+    onProgress?: (progress: number) => void,
+  ): Promise<any> {
+    const { buildClientUrl, buildUrlWithQuery } = await import("./helpers");
+
+    let url = buildClientUrl(path);
+    if (params) {
+      url = buildUrlWithQuery(url, params);
+    }
+
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+
+      if (onProgress) {
+        xhr.upload.addEventListener("progress", (e) => {
+          if (e.lengthComputable) {
+            const progress = (e.loaded / e.total) * 100;
+            onProgress(progress);
+          }
+        });
+      }
+
+      xhr.addEventListener("load", () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const response = JSON.parse(xhr.responseText);
+            resolve(response);
+          } catch (_error) {
+            reject(new Error("Invalid JSON response"));
+          }
+        } else {
+          reject(new Error(`HTTP ${xhr.status}: ${xhr.statusText}`));
+        }
+      });
+
+      xhr.addEventListener("error", () => {
+        reject(new Error("Network error"));
+      });
+
+      xhr.open("POST", url);
+      xhr.withCredentials = true;
+      xhr.send(formData);
+    });
+  }
+
+  private async _makeServerFileUploadWithProgress(
+    path: string,
+    formData: FormData,
+    params?: Record<string, any>,
+  ): Promise<string> {
+    const { makeAuthenticatedFileUpload, buildServerUrl, buildUrlWithQuery } =
+      await import("./helpers");
+
+    let url = buildServerUrl(path);
+    if (params) {
+      url = buildUrlWithQuery(url, params);
+    }
+
+    return await makeAuthenticatedFileUpload(url, formData);
   }
 
   private async _request(
@@ -793,13 +991,96 @@ export default class BackendAPI {
       console.debug(`${method} ${path} payload:`, payload);
     }
 
-    // Always use proxy server action to not expose any auth tokens to the browser
-    return await proxyApiRequest({
+    if (isClient) {
+      return this._makeClientRequest(method, path, payload);
+    } else {
+      return this._makeServerRequest(method, path, payload);
+    }
+  }
+
+  private async _makeClientRequest(
+    method: string,
+    path: string,
+    payload?: Record<string, any>,
+  ) {
+    // Dynamic import is required even for client-only functions because helpers.ts
+    // has server-only imports (like getServerSupabase) at the top level. Static imports
+    // would bundle server-only code into the client bundle, causing runtime errors.
+    const {
+      buildClientUrl,
+      buildUrlWithQuery,
+      handleFetchError,
+      isLogoutInProgress,
+      isAuthenticationError,
+    } = await import("./helpers");
+
+    const payloadAsQuery = ["GET", "DELETE"].includes(method);
+    let url = buildClientUrl(path);
+
+    if (payloadAsQuery && payload) {
+      url = buildUrlWithQuery(url, payload);
+    }
+
+    // Prepare headers with admin impersonation support
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+
+    const impersonatedUserId = ImpersonationState.get();
+    if (impersonatedUserId) {
+      headers[IMPERSONATION_HEADER_NAME] = impersonatedUserId;
+    }
+
+    const response = await fetch(url, {
       method,
-      path,
-      payload,
-      baseUrl: this.baseUrl,
+      headers,
+      body: !payloadAsQuery && payload ? JSON.stringify(payload) : undefined,
+      credentials: "include",
     });
+
+    if (!response.ok) {
+      const error = await handleFetchError(response);
+      if (
+        isAuthenticationError(response, error.message) &&
+        isLogoutInProgress()
+      ) {
+        console.debug(
+          "Authentication request failed during logout, ignoring:",
+          error.message,
+        );
+        return null;
+      }
+      throw error;
+    }
+
+    return await response.json();
+  }
+
+  private async _makeServerRequest(
+    method: string,
+    path: string,
+    payload?: Record<string, any>,
+  ) {
+    const { makeAuthenticatedRequest, buildServerUrl } = await import(
+      "./helpers"
+    );
+    const url = buildServerUrl(path);
+
+    // For server-side requests, try to read impersonation from cookies
+    const impersonationUserId = await ImpersonationState.getServerSide();
+    const fakeRequest = impersonationUserId
+      ? new Request(url, {
+          headers: { "X-Act-As-User-Id": impersonationUserId },
+        })
+      : undefined;
+
+    return await makeAuthenticatedRequest(
+      method,
+      url,
+      payload,
+      "application/json",
+      fakeRequest,
+    );
   }
 
   ////////////////////////////////////////
@@ -885,6 +1166,12 @@ export default class BackendAPI {
   }
 
   async connectWebSocket(): Promise<void> {
+    // Do not attempt to connect if a disconnect intent is present (e.g., during logout)
+    if (this._hasDisconnectIntent()) {
+      return;
+    }
+
+    this.isIntentionallyDisconnected = false;
     return (this.wsConnecting ??= new Promise(async (resolve, reject) => {
       try {
         let token = "";
@@ -897,7 +1184,19 @@ export default class BackendAPI {
           }
         } catch (error) {
           console.warn("Failed to get token for WebSocket connection:", error);
-          // Continue with empty token, connection might still work
+          // Intentionally fall through; we'll bail out below if no token is available
+        }
+
+        // If we don't have a token, skip attempting a connection.
+        if (!token) {
+          console.info(
+            "[BackendAPI] Skipping WebSocket connect: no auth token available",
+          );
+          // Resolve first, then clear wsConnecting to avoid races for awaiters
+          resolve();
+          this.wsConnecting = null;
+          this.webSocket = null;
+          return;
         }
 
         const wsUrlWithToken = `${this.wsUrl}?token=${token}`;
@@ -908,6 +1207,7 @@ export default class BackendAPI {
           this.webSocket!.state = "connected";
           console.info("[BackendAPI] WebSocket connected to", this.wsUrl);
           this._startWSHeartbeat(); // Start heartbeat when connection opens
+          this._clearDisconnectIntent(); // Clear disconnect intent when connected
           this.wsOnConnectHandlers.forEach((handler) => handler());
           resolve();
         };
@@ -928,9 +1228,17 @@ export default class BackendAPI {
 
           this._stopWSHeartbeat(); // Stop heartbeat when connection closes
           this.wsConnecting = null;
-          this.wsOnDisconnectHandlers.forEach((handler) => handler());
-          // Attempt to reconnect after a delay
-          setTimeout(() => this.connectWebSocket().then(resolve), 1000);
+
+          const wasIntentional =
+            this.isIntentionallyDisconnected || this._hasDisconnectIntent();
+
+          if (!wasIntentional) {
+            this.wsOnDisconnectHandlers.forEach((handler) => handler());
+            setTimeout(() => this.connectWebSocket().then(resolve), 1000);
+          } else {
+            // Ensure pending connect calls settle on intentional close
+            resolve();
+          }
         };
 
         this.webSocket.onerror = (error) => {
@@ -938,7 +1246,6 @@ export default class BackendAPI {
             console.error("[BackendAPI] WebSocket error:", error);
           }
         };
-
         this.webSocket.onmessage = (event) => this._handleWSMessage(event);
       } catch (error) {
         console.error("[BackendAPI] Error connecting to WebSocket:", error);
@@ -948,9 +1255,37 @@ export default class BackendAPI {
   }
 
   disconnectWebSocket() {
+    this.isIntentionallyDisconnected = true;
     this._stopWSHeartbeat(); // Stop heartbeat when disconnecting
-    if (this.webSocket && this.webSocket.readyState === WebSocket.OPEN) {
+    if (
+      this.webSocket &&
+      (this.webSocket.readyState === WebSocket.OPEN ||
+        this.webSocket.readyState === WebSocket.CONNECTING)
+    ) {
       this.webSocket.close();
+    }
+    this.wsConnecting = null;
+  }
+
+  private _hasDisconnectIntent(): boolean {
+    if (!isClient) return false;
+
+    try {
+      return storage.get(Key.WEBSOCKET_DISCONNECT_INTENT) === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  private _clearDisconnectIntent(): void {
+    if (!isClient) return;
+
+    try {
+      storage.clean(Key.WEBSOCKET_DISCONNECT_INTENT);
+    } catch {
+      Sentry.captureException(
+        new Error("Failed to clear WebSocket disconnect intent"),
+      );
     }
   }
 
@@ -1030,6 +1365,7 @@ type WebsocketMessageTypeMap = {
   subscribe_graph_executions: { graph_id: GraphID };
   graph_execution_event: GraphExecution;
   node_execution_event: NodeExecutionResult;
+  notification: WebSocketNotification;
   heartbeat: "ping" | "pong";
 };
 

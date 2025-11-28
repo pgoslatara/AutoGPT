@@ -1,16 +1,19 @@
-import functools
 import inspect
+import logging
+import os
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator as AsyncGen
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     ClassVar,
     Generic,
     Optional,
     Sequence,
     Type,
+    TypeAlias,
     TypeVar,
     cast,
     get_origin,
@@ -25,6 +28,14 @@ from pydantic import BaseModel
 from backend.data.model import NodeExecutionStats
 from backend.integrations.providers import ProviderName
 from backend.util import json
+from backend.util.cache import cached
+from backend.util.exceptions import (
+    BlockError,
+    BlockExecutionError,
+    BlockInputError,
+    BlockOutputError,
+    BlockUnknownError,
+)
 from backend.util.settings import Config
 
 from .model import (
@@ -32,17 +43,21 @@ from .model import (
     Credentials,
     CredentialsFieldInfo,
     CredentialsMetaInput,
+    SchemaField,
     is_credentials_field_name,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .graph import Link
 
 app_config = Config()
 
-BlockData = tuple[str, Any]  # Input & Output data should be a tuple of (name, data).
 BlockInput = dict[str, Any]  # Input: 1 input pin consumes 1 data.
-BlockOutput = AsyncGen[BlockData, None]  # Output: 1 output pin produces n data.
+BlockOutputEntry = tuple[str, Any]  # Output data should be a tuple of (name, value).
+BlockOutput = AsyncGen[BlockOutputEntry, None]  # Output: 1 output pin produces n data.
+BlockTestOutput = BlockOutputEntry | tuple[str, Callable[[Any], bool]]
 CompletedBlockOutput = dict[str, list[Any]]  # Completed stream, collected as a dict.
 
 
@@ -55,6 +70,7 @@ class BlockType(Enum):
     WEBHOOK_MANUAL = "Webhook (manual)"
     AGENT = "Agent"
     AI = "AI"
+    AYRSHARE = "Ayrshare"
 
 
 class BlockCategory(Enum):
@@ -78,9 +94,49 @@ class BlockCategory(Enum):
     PRODUCTIVITY = "Block that helps with productivity"
     ISSUE_TRACKING = "Block that helps with issue tracking"
     MULTIMEDIA = "Block that interacts with multimedia content"
+    MARKETING = "Block that helps with marketing"
 
     def dict(self) -> dict[str, str]:
         return {"category": self.name, "description": self.value}
+
+
+class BlockCostType(str, Enum):
+    RUN = "run"  # cost X credits per run
+    BYTE = "byte"  # cost X credits per byte
+    SECOND = "second"  # cost X credits per second
+
+
+class BlockCost(BaseModel):
+    cost_amount: int
+    cost_filter: BlockInput
+    cost_type: BlockCostType
+
+    def __init__(
+        self,
+        cost_amount: int,
+        cost_type: BlockCostType = BlockCostType.RUN,
+        cost_filter: Optional[BlockInput] = None,
+        **data: Any,
+    ) -> None:
+        super().__init__(
+            cost_amount=cost_amount,
+            cost_filter=cost_filter or {},
+            cost_type=cost_type,
+            **data,
+        )
+
+
+class BlockInfo(BaseModel):
+    id: str
+    name: str
+    inputSchema: dict[str, Any]
+    outputSchema: dict[str, Any]
+    costs: list[BlockCost]
+    description: str
+    categories: list[dict[str, str]]
+    contributors: list[dict[str, Any]]
+    staticOutput: bool
+    uiType: str
 
 
 class BlockSchema(BaseModel):
@@ -232,12 +288,40 @@ class BlockSchema(BaseModel):
         return cls.get_required_fields() - set(data)
 
 
-BlockSchemaInputType = TypeVar("BlockSchemaInputType", bound=BlockSchema)
-BlockSchemaOutputType = TypeVar("BlockSchemaOutputType", bound=BlockSchema)
+class BlockSchemaInput(BlockSchema):
+    """
+    Base schema class for block inputs.
+    All block input schemas should extend this class for consistency.
+    """
 
-
-class EmptySchema(BlockSchema):
     pass
+
+
+class BlockSchemaOutput(BlockSchema):
+    """
+    Base schema class for block outputs that includes a standard error field.
+    All block output schemas should extend this class to ensure consistent error handling.
+    """
+
+    error: str = SchemaField(
+        description="Error message if the operation failed", default=""
+    )
+
+
+BlockSchemaInputType = TypeVar("BlockSchemaInputType", bound=BlockSchemaInput)
+BlockSchemaOutputType = TypeVar("BlockSchemaOutputType", bound=BlockSchemaOutput)
+
+
+class EmptyInputSchema(BlockSchemaInput):
+    pass
+
+
+class EmptyOutputSchema(BlockSchemaOutput):
+    pass
+
+
+# For backward compatibility - will be deprecated
+EmptySchema = EmptyOutputSchema
 
 
 # --8<-- [start:BlockWebhookConfig]
@@ -297,10 +381,10 @@ class Block(ABC, Generic[BlockSchemaInputType, BlockSchemaOutputType]):
         description: str = "",
         contributors: list[ContributorDetails] = [],
         categories: set[BlockCategory] | None = None,
-        input_schema: Type[BlockSchemaInputType] = EmptySchema,
-        output_schema: Type[BlockSchemaOutputType] = EmptySchema,
+        input_schema: Type[BlockSchemaInputType] = EmptyInputSchema,
+        output_schema: Type[BlockSchemaOutputType] = EmptyOutputSchema,
         test_input: BlockInput | list[BlockInput] | None = None,
-        test_output: BlockData | list[BlockData] | None = None,
+        test_output: BlockTestOutput | list[BlockTestOutput] | None = None,
         test_mock: dict[str, Any] | None = None,
         test_credentials: Optional[Credentials | dict[str, Credentials]] = None,
         disabled: bool = False,
@@ -424,28 +508,7 @@ class Block(ABC, Generic[BlockSchemaInputType, BlockSchemaOutputType]):
         raise ValueError(f"{self.name} did not produce any output for {output}")
 
     def merge_stats(self, stats: NodeExecutionStats) -> NodeExecutionStats:
-        stats_dict = stats.model_dump()
-        current_stats = self.execution_stats.model_dump()
-
-        for key, value in stats_dict.items():
-            if key not in current_stats:
-                # Field doesn't exist yet, just set it, but this will probably
-                # not happen, just in case though so we throw for invalid when
-                # converting back in
-                current_stats[key] = value
-            elif isinstance(value, dict) and isinstance(current_stats[key], dict):
-                current_stats[key].update(value)
-            elif isinstance(value, (int, float)) and isinstance(
-                current_stats[key], (int, float)
-            ):
-                current_stats[key] += value
-            elif isinstance(value, list) and isinstance(current_stats[key], list):
-                current_stats[key].extend(value)
-            else:
-                current_stats[key] = value
-
-        self.execution_stats = NodeExecutionStats(**current_stats)
-
+        self.execution_stats += stats
         return self.execution_stats
 
     @property
@@ -467,10 +530,44 @@ class Block(ABC, Generic[BlockSchemaInputType, BlockSchemaOutputType]):
             "uiType": self.block_type.value,
         }
 
+    def get_info(self) -> BlockInfo:
+        from backend.data.credit import get_block_cost
+
+        return BlockInfo(
+            id=self.id,
+            name=self.name,
+            inputSchema=self.input_schema.jsonschema(),
+            outputSchema=self.output_schema.jsonschema(),
+            costs=get_block_cost(self),
+            description=self.description,
+            categories=[category.dict() for category in self.categories],
+            contributors=[
+                contributor.model_dump() for contributor in self.contributors
+            ],
+            staticOutput=self.static_output,
+            uiType=self.block_type.value,
+        )
+
     async def execute(self, input_data: BlockInput, **kwargs) -> BlockOutput:
+        try:
+            async for output_name, output_data in self._execute(input_data, **kwargs):
+                yield output_name, output_data
+        except Exception as ex:
+            if not isinstance(ex, BlockError):
+                raise BlockUnknownError(
+                    message=str(ex),
+                    block_name=self.name,
+                    block_id=self.id,
+                ) from ex
+            else:
+                raise ex
+
+    async def _execute(self, input_data: BlockInput, **kwargs) -> BlockOutput:
         if error := self.input_schema.validate_data(input_data):
-            raise ValueError(
-                f"Unable to execute block with invalid input data: {error}"
+            raise BlockInputError(
+                message=f"Unable to execute block with invalid input data: {error}",
+                block_name=self.name,
+                block_id=self.id,
             )
 
         async for output_name, output_data in self.run(
@@ -478,11 +575,17 @@ class Block(ABC, Generic[BlockSchemaInputType, BlockSchemaOutputType]):
             **kwargs,
         ):
             if output_name == "error":
-                raise RuntimeError(output_data)
+                raise BlockExecutionError(
+                    message=output_data, block_name=self.name, block_id=self.id
+                )
             if self.block_type == BlockType.STANDARD and (
                 error := self.output_schema.validate_field(output_name, output_data)
             ):
-                raise ValueError(f"Block produced an invalid output data: {error}")
+                raise BlockOutputError(
+                    message=f"Block produced an invalid output data: {error}",
+                    block_name=self.name,
+                    block_id=self.id,
+                )
             yield output_name, output_data
 
     def is_triggered_by_event_type(
@@ -502,6 +605,10 @@ class Block(ABC, Generic[BlockSchemaInputType, BlockSchemaOutputType]):
         ]
 
 
+# Type alias for any block with standard input/output schemas
+AnyBlockSchema: TypeAlias = Block[BlockSchemaInput, BlockSchemaOutput]
+
+
 # ======================= Block Helper Functions ======================= #
 
 
@@ -511,7 +618,127 @@ def get_blocks() -> dict[str, Type[Block]]:
     return load_all_blocks()
 
 
+def is_block_auth_configured(
+    block_cls: type[AnyBlockSchema],
+) -> bool:
+    """
+    Check if a block has a valid authentication method configured at runtime.
+
+    For example if a block is an OAuth-only block and there env vars are not set,
+    do not show it in the UI.
+
+    """
+    from backend.sdk.registry import AutoRegistry
+
+    # Create an instance to access input_schema
+    try:
+        block = block_cls()
+    except Exception as e:
+        # If we can't create a block instance, assume it's not OAuth-only
+        logger.error(f"Error creating block instance for {block_cls.__name__}: {e}")
+        return True
+    logger.debug(
+        f"Checking if block {block_cls.__name__} has a valid provider configured"
+    )
+
+    # Get all credential inputs from input schema
+    credential_inputs = block.input_schema.get_credentials_fields_info()
+    required_inputs = block.input_schema.get_required_fields()
+    if not credential_inputs:
+        logger.debug(
+            f"Block {block_cls.__name__} has no credential inputs - Treating as valid"
+        )
+        return True
+
+    # Check credential inputs
+    if len(required_inputs.intersection(credential_inputs.keys())) == 0:
+        logger.debug(
+            f"Block {block_cls.__name__} has only optional credential inputs"
+            " - will work without credentials configured"
+        )
+
+    # Check if the credential inputs for this block are correctly configured
+    for field_name, field_info in credential_inputs.items():
+        provider_names = field_info.provider
+        if not provider_names:
+            logger.warning(
+                f"Block {block_cls.__name__} "
+                f"has credential input '{field_name}' with no provider options"
+                " - Disabling"
+            )
+            return False
+
+        # If a field has multiple possible providers, each one needs to be usable to
+        # prevent breaking the UX
+        for _provider_name in provider_names:
+            provider_name = _provider_name.value
+            if provider_name in ProviderName.__members__.values():
+                logger.debug(
+                    f"Block {block_cls.__name__} credential input '{field_name}' "
+                    f"provider '{provider_name}' is part of the legacy provider system"
+                    " - Treating as valid"
+                )
+                break
+
+            provider = AutoRegistry.get_provider(provider_name)
+            if not provider:
+                logger.warning(
+                    f"Block {block_cls.__name__} credential input '{field_name}' "
+                    f"refers to unknown provider '{provider_name}' - Disabling"
+                )
+                return False
+
+            # Check the provider's supported auth types
+            if field_info.supported_types != provider.supported_auth_types:
+                logger.warning(
+                    f"Block {block_cls.__name__} credential input '{field_name}' "
+                    f"has mismatched supported auth types (field <> Provider): "
+                    f"{field_info.supported_types} != {provider.supported_auth_types}"
+                )
+
+            if not (supported_auth_types := provider.supported_auth_types):
+                # No auth methods are been configured for this provider
+                logger.warning(
+                    f"Block {block_cls.__name__} credential input '{field_name}' "
+                    f"provider '{provider_name}' "
+                    "has no authentication methods configured - Disabling"
+                )
+                return False
+
+            # Check if provider supports OAuth
+            if "oauth2" in supported_auth_types:
+                # Check if OAuth environment variables are set
+                if (oauth_config := provider.oauth_config) and bool(
+                    os.getenv(oauth_config.client_id_env_var)
+                    and os.getenv(oauth_config.client_secret_env_var)
+                ):
+                    logger.debug(
+                        f"Block {block_cls.__name__} credential input '{field_name}' "
+                        f"provider '{provider_name}' is configured for OAuth"
+                    )
+                else:
+                    logger.error(
+                        f"Block {block_cls.__name__} credential input '{field_name}' "
+                        f"provider '{provider_name}' "
+                        "is missing OAuth client ID or secret - Disabling"
+                    )
+                    return False
+
+        logger.debug(
+            f"Block {block_cls.__name__} credential input '{field_name}' is valid; "
+            f"supported credential types: {', '.join(field_info.supported_types)}"
+        )
+
+    return True
+
+
 async def initialize_blocks() -> None:
+    # First, sync all provider costs to blocks
+    # Imported here to avoid circular import
+    from backend.sdk.cost_integration import sync_all_provider_costs
+
+    sync_all_provider_costs()
+
     for cls in get_blocks().values():
         block = cls()
         existing_block = await AgentBlock.prisma().find_first(
@@ -548,12 +775,12 @@ async def initialize_blocks() -> None:
 
 
 # Note on the return type annotation: https://github.com/microsoft/pyright/issues/10281
-def get_block(block_id: str) -> Block[BlockSchema, BlockSchema] | None:
+def get_block(block_id: str) -> AnyBlockSchema | None:
     cls = get_blocks().get(block_id)
     return cls() if cls else None
 
 
-@functools.cache
+@cached(ttl_seconds=3600)
 def get_webhook_block_ids() -> Sequence[str]:
     return [
         id
@@ -562,7 +789,7 @@ def get_webhook_block_ids() -> Sequence[str]:
     ]
 
 
-@functools.cache
+@cached(ttl_seconds=3600)
 def get_io_block_ids() -> Sequence[str]:
     return [
         id

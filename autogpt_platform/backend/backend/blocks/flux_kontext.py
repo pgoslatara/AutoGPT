@@ -5,7 +5,13 @@ from pydantic import SecretStr
 from replicate.client import Client as ReplicateClient
 from replicate.helpers import FileOutput
 
-from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema
+from backend.data.block import (
+    Block,
+    BlockCategory,
+    BlockOutput,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+)
 from backend.data.model import (
     APIKeyCredentials,
     CredentialsField,
@@ -57,7 +63,7 @@ class AspectRatio(str, Enum):
 
 
 class AIImageEditorBlock(Block):
-    class Input(BlockSchema):
+    class Input(BlockSchemaInput):
         credentials: CredentialsMetaInput[
             Literal[ProviderName.REPLICATE], Literal["api_key"]
         ] = CredentialsField(
@@ -90,11 +96,10 @@ class AIImageEditorBlock(Block):
             title="Model",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         output_image: MediaFileType = SchemaField(
             description="URL of the transformed image"
         )
-        error: str = SchemaField(description="Error message if generation failed")
 
     def __init__(self):
         super().__init__(
@@ -129,6 +134,7 @@ class AIImageEditorBlock(Block):
         *,
         credentials: APIKeyCredentials,
         graph_exec_id: str,
+        user_id: str,
         **kwargs,
     ) -> BlockOutput:
         result = await self.run_model(
@@ -139,6 +145,7 @@ class AIImageEditorBlock(Block):
                 await store_media_file(
                     graph_exec_id=graph_exec_id,
                     file=input_data.input_image,
+                    user_id=user_id,
                     return_content=True,
                 )
                 if input_data.input_image

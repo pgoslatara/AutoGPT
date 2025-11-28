@@ -10,15 +10,21 @@ from backend.blocks.apollo.models import (
     PrimaryPhone,
     SearchOrganizationsRequest,
 )
-from backend.data.block import Block, BlockCategory, BlockOutput, BlockSchema
-from backend.data.model import SchemaField
+from backend.data.block import (
+    Block,
+    BlockCategory,
+    BlockOutput,
+    BlockSchemaInput,
+    BlockSchemaOutput,
+)
+from backend.data.model import CredentialsField, SchemaField
 
 
 class SearchOrganizationsBlock(Block):
     """Search for organizations in Apollo"""
 
-    class Input(BlockSchema):
-        organization_num_empoloyees_range: list[int] = SchemaField(
+    class Input(BlockSchemaInput):
+        organization_num_employees_range: list[int] = SchemaField(
             description="""The number range of employees working for the company. This enables you to find companies based on headcount. You can add multiple ranges to expand your search results.
 
 Each range you add needs to be a string, with the upper and lower numbers of the range separated only by a comma.""",
@@ -65,11 +71,11 @@ To find IDs, identify the values for organization_id when you call this endpoint
             le=50000,
             advanced=True,
         )
-        credentials: ApolloCredentialsInput = SchemaField(
+        credentials: ApolloCredentialsInput = CredentialsField(
             description="Apollo credentials",
         )
 
-    class Output(BlockSchema):
+    class Output(BlockSchemaOutput):
         organizations: list[Organization] = SchemaField(
             description="List of organizations found",
             default_factory=list,
